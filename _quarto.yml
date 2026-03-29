@@ -1,5 +1,12 @@
 project:
   title: "flodding-housing-price"
+  output-dir: _output
+  
+bibliography: references.bib  
 
-
-
+format:
+  html:
+    anchor-sections: true
+    embed-resources: true
+    link-external-icon: true
+    link-external-newwindow: true

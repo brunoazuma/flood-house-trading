@@ -1,0 +1,8 @@
+---
+title: "ITBI Data"
+---
+
+# Collecting ITBI data
+
+This project will be evaluating the impact of flooding events on the prices of real estate in the city of São Paulo, Brazil. To do this, we will be using data from the ITBI (Imposto de Transmissão de Bens Imóveis) tax, which is a tax on the transfer of real estate property in Brazil. The ITBI data will provide us with information on the prices of real estate transactions in São Paulo, which we can then analyze in relation to flooding events.
+

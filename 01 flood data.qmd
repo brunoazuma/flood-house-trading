@@ -1,0 +1,81 @@
+---
+title: "Flood data Data"
+---
+
+```{r}
+library(tidyverse)
+library(geoarrow)
+library(arrow)
+library(sf)
+```
+
+# Collecting flood events data
+
+This project will be evaluating the impact of flooding events on real estate trading in the city of São Paulo, Brazil. To do this, we will also be using records of flooding occurrences registered by the São Paulo Civil Defense. This data is available on GeoSampa (https://geosampa.prefeitura.sp.gov.br/), from 2013 to 2026, along with other registered occurrence types.
+
+## Data Sources
+
+The occurrence data is available as a zip file with one GeoPackage file for each year.
+
+First, let's check if the data directory for our project is already set up and, if not, create it.
+
+```{r}
+options(scipen = 32)
+data_dir <- "data"
+dir.create(data_dir, showWarnings = FALSE)
+```
+
+Next, we will download the occurrence data for the year 2025.
+
+```{r}
+# The server has some kind of restriction for automated downloads, so we will not be able to download the data directly from the script for now. Future versions of this script can include some scraping code to get the download link automatically, but for now, we will have to download the data manually and place it in the data directory.
+
+# occurrence_2025_url <- "https://download.geosampa.prefeitura.sp.gov.br/PaginasPublicas/downloadArquivo.aspx?orig=DownloadCamadas&arq=07_Prote%E7%E3o%20e%20Defesa%20Civil%5C%5COcorrencias%5C%5CGPKG_ZIP%5C%5CSIRGAS_GPKG_riscoocorrencia&arqTipo=GPKG_ZIP"
+
+occurrence_data_dir <- file.path(data_dir, "occurrence")
+dir.create(occurrence_data_dir, showWarnings = FALSE)
+
+# download.file(occurrence_url, destfile = file.path(occurrence_data_dir, "occurrence.zip"), mode = "wb")
+```
+
+Now, we extract the GeoPackage files from the downloaded zip file.
+
+```{r}
+unzip(file.path(occurrence_data_dir, "occurrence.zip"), exdir = occurrence_data_dir)
+```
+
+# Transforming the data
+
+First, we need to read each GeoPackage file and filter the data to keep only the flooding events. The flooding events are identified by the occurrence type of "ALAGAMENTO" e "INUNDACAO". Also, we will combine all the years into a single data frame for further analysis.
+
+```{r}
+flood_typenames <- c("ALAGAMENTO", "INUNDACAO")
+
+for (year in 2013:2025) {
+  filepath <- file.path(occurrence_data_dir, paste0("SIRGAS_GPKG_riscoocorrencia_", year, ".gpkg"))
+  flood_data <- st_read(filepath) |>
+                filter(ocorrencia %in% flood_typenames) |>
+                st_zm(drop = TRUE, what = "ZM")
+  if (!exists("flood_df")) {
+    flood_df <- flood_data
+  } else {
+    flood_df <- bind_rows(flood_df, flood_data)
+  }
+}
+
+flood_df |> head()
+```
+
+Also, let's make sure the coordinate reference system of the flood events data is set to the SIRGAS 2000 / UTM zone 23S (EPSG:31983) projection, which is the recommended projection for spatial analysis in São Paulo.
+
+```{r}
+st_crs(flood_df)
+```
+
+# Saving the transformed data
+
+Finally, we will save the transformed flood events data as a GeoPackage file for further analysis.
+
+```{r}
+flood_df |> st_write(file.path(occurrence_data_dir, "flood_events.gpkg"), delete_dsn = TRUE)
+```

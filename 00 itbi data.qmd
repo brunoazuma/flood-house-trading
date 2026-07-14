@@ -2,7 +2,127 @@
 title: "ITBI Data"
 ---
 
+```{r}
+library(tidyverse)
+library(geoarrow)
+library(arrow)
+library(sf)
+```
+
 # Collecting ITBI data
 
-This project will be evaluating the impact of flooding events on the prices of real estate in the city of São Paulo, Brazil. To do this, we will be using data from the ITBI (Imposto de Transmissão de Bens Imóveis) tax, which is a tax on the transfer of real estate property in Brazil. The ITBI data will provide us with information on the prices of real estate transactions in São Paulo, which we can then analyze in relation to flooding events.
+This project will be evaluating the impact of flooding events on real estate trading in the city of São Paulo, Brazil. To do this, we will be using data from the ITBI (Imposto de Transmissão de Bens Imóveis) tax, which is a tax on the transfer of real estate property in Brazil. The ITBI data will provide us with information on the prices of real estate transactions in São Paulo, which we can then analyze in relation to flooding events.
 
+## Data Sources
+
+The ITBI data can be obtained from the São Paulo City Hall's website. The data is available in XLSX format and can be downloaded for free. The data includes information on the date of the transaction, the location of the property, the type of property, and the price of the transaction.
+
+First, let's setup the data directory for our project.
+
+```{r}
+options(scipen = 32)
+data_dir <- "data"
+dir.create(data_dir, showWarnings = FALSE)
+```
+
+Next, we will download the ITBI data for the year 2025.
+
+```{r}
+itbi_2025_url <- "https://drive.prefeitura.sp.gov.br/cidade/secretarias/upload/fazenda/arquivos/itbi/GUIAS%20DE%20ITBI%20PAGAS%20%2828012026%29%20XLS.xlsx"
+
+itbi_data_dir <- file.path(data_dir, "itbi")
+dir.create(itbi_data_dir, showWarnings = FALSE)
+
+download.file(itbi_2025_url, destfile = file.path(itbi_data_dir, "itbi_2025.xlsx"), mode = "wb")
+```
+
+Finally, we read it into R with the `readxl` package and take a look at the data. However, to prevent any issues with the data types of the columns, we will treat all columns as text when reading the data. This will allow us to avoid any potential issues with the data types and ensure that we can work with the data effectively. Besides, the data comes with one sheet for each month, so we will need to read each sheet separately and combine them into a single data frame. Fist, let's read the names of the sheets in the Excel file.
+
+```{r}
+sheet_names <- readxl::excel_sheets(file.path(itbi_data_dir, "itbi_2025.xlsx"))
+sheet_names
+```
+
+We can see that the first 12 sheets correspond to the months of the year, while the last sheet contains some metadata about the data. We will read each of the first 12 sheets and combine them into a single data frame.
+
+```{r}
+for (sheet in sheet_names[1:12]) {
+  sheet_data <- readxl::read_excel(file.path(itbi_data_dir, "itbi_2025.xlsx"), sheet = sheet, col_types = "text")
+  if (!exists("itbi_2025_data")) {
+    itbi_2025_data <- sheet_data
+  } else {
+    itbi_2025_data <- bind_rows(itbi_2025_data, sheet_data)
+  }
+}
+itbi_2025_data
+```
+
+## Data Cleaning
+
+We can see that the `CEP` column doesn't have the leading zeros, which are important for our analysis. We will need to add the leading zeros back to the `CEP` column to ensure that we can work with the data effectively.
+
+```{r}
+itbi_2025_data <- itbi_2025_data |>
+  mutate(CEP = str_pad(CEP, width = 8, pad = "0"))
+itbi_2025_data
+```
+
+Also, let's clean the name of the columns to make them easier to work with.
+
+```{r}
+# Clean all column names to be SQL-safe
+itbi_2025_data <- itbi_2025_data |>
+  janitor::clean_names()  # Converts to snake_case, removes special chars
+
+# Check the new names
+names(itbi_2025_data)
+```
+
+## Getting the coordinates of the properties
+
+To analyze the impact of flooding events on real estate prices, we will need to get the coordinates of the properties. We can use the `CEP` column to get the coordinates of the properties using a geocoding service. In this case, we will use the `geocodebr` package, which provides a geocoding service for Brazilian addresses. The library needs a definition of the fields in the address to work properly and includes the need for columns aboute municipality and state, which are not present in our data. We will need to define the fields in the address and add the municipality and state columns to our data frame before we can use the `geocodebr` package to get the coordinates of the properties.
+
+```{r}
+itbi_2025_data <- itbi_2025_data |>
+  mutate(
+    municipio = "São Paulo",
+    estado = "SP"
+  )
+```
+
+```{r}
+campos <- geocodebr::definir_campos(
+  logradouro = "nome_do_logradouro",
+  numero = "numero",
+  cep = "cep",
+  localidade = "bairro",
+  municipio = "municipio",
+  estado = "estado"
+  )
+
+itbi_2025_data <- geocodebr::geocode(
+  enderecos = itbi_2025_data,
+  campos_endereco = campos,
+  resultado_completo = FALSE,
+  resolver_empates = TRUE,
+  resultado_sf = TRUE,
+  verboso = FALSE
+  )
+itbi_2025_data |> head(500) |> DT::datatable()
+```
+
+```{r}
+itbi_2025_data <- itbi_2025_data |>
+  filter(!is.na(geometry)) |>
+  filter(proporcao_transmitida_percent == 100)
+
+itbi_2025_data |> glimpse()
+```
+
+```{r}
+# As the parquet writer doesn't save geographical metadata, we need to project the data in OGC:CRS84, as specified in https://github.com/opengeospatial/geoparquet/blob/main/format-specs/compatible-parquet.md
+itbi_2025_data <- st_transform(itbi_2025_data, crs = "OGC:CRS84")
+
+# Save the geocoded data to a geoparquet file for later use
+write_parquet(itbi_2025_data, file.path(itbi_data_dir, "itbi_2025_geocoded.parquet"))
+```

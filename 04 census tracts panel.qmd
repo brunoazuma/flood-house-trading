@@ -1,0 +1,157 @@
+---
+title: "Flood data Data"
+---
+
+Now, with the transactions, census tracts, and flood events data collected, we can start preparing the data for a panel regression model. The first approach we will take is to aggregate the data by census tract, creating a database of census tracts with a discrete variable indicating how many transactions have occurred in that week, and an exposure variable with the sum of the inverse distance to all of the flood events that happened in the same week. We will also need to select a cap distance for the flood events, as we will not consider events that are too far away from the house.
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(geoarrow)
+library(arrow)
+library(sf)
+library(units)
+library(tmap)
+```
+
+First, let's load the ITBI data, the census tracts data, and the flood events data that we have previously collected.
+
+```{r}
+itbi_data <- sfarrow::st_read_parquet("data/itbi/itbi_2025_geocoded.parquet")
+# itbi_data$geometry <- st_as_sfc(itbi_data$geometry)
+# st_geometry(itbi_data) <- "geometry"
+census_tracts <- sfarrow::st_read_parquet("data/census/census_tracts.parquet")
+# census_tracts$geometry <- st_as_sfc(census_tracts$geom)
+# st_geometry(census_tracts) <- "geometry"
+flood_events <- st_read("data/occurrence/flood_events.gpkg")
+```
+
+Let's confirm that all datasets are using the same coordinate reference system (CRS). If they are not, we will need to transform one of them to match the others.
+
+```{r}
+st_crs(itbi_data)
+st_crs(census_tracts)
+st_crs(flood_events)
+```
+
+The itbi_data is in EPSG:4674, while the flood_events is in EPSG:31983. We will transform the itbi_data to match the flood_events CRS.
+
+```{r}
+itbi_data <- st_transform(itbi_data, crs = st_crs(flood_events))
+census_tracts <- st_transform(census_tracts, crs = st_crs(flood_events))
+```
+
+# Specifying the characteristics of the houses on the observations
+
+## Keeping residential houses only
+
+The first step in preparing the data for the regression model is to filter the itbi_data to keep only the residential houses. We will use the `descricao_do_padrao_iptu` column to filter the data.
+
+```{r}
+itbi_data |>
+    st_drop_geometry() |>
+    select(descricao_do_padrao_iptu) |>
+    distinct() |>
+    arrange(descricao_do_padrao_iptu) |>
+    DT::datatable()
+```
+
+```{r}
+residential_houses <- itbi_data |>
+    filter(str_detect(descricao_do_padrao_iptu, "RESIDENCIAL"))
+
+residential_houses |> glimpse()
+```
+
+## Selecting the geocoding precision
+
+The next step is to filter the itbi_data to keep only the houses that have been geocoded with a high precision. We will use the `precisao` and `desvio_metros` columns to filter the data. First, let's check the frequency of the different values in the `precisao` column.
+
+```{r}
+residential_houses |>
+    st_drop_geometry() |>
+    select(precisao) |>
+    group_by(precisao) |>
+    summarise(count = n()) |>
+    mutate(percentage = count / sum(count) * 100, percentage = round(percentage, 2)) |>
+    arrange(desc(count)) |>
+    DT::datatable()
+```
+
+Most of the houses have been geocoded with a high precision, so let's drop the houses that have been geocoded by any level above of "numero_aproximado".
+
+```{r}
+residential_houses <- residential_houses |>
+    filter(precisao %in% c("numero", "numero_aproximado"))
+residential_houses |> glimpse()
+```
+
+Now, let's check the distribution of the `desvio_metros` column to see if we can filter the data further.
+
+```{r}
+residential_houses |>
+    st_drop_geometry() |>
+    select(desvio_metros) |>
+    filter(!is.na(desvio_metros)) |>
+    ggplot(aes(x = desvio_metros)) +
+    geom_histogram(binwidth = 10, fill = "lightblue", color = "black") +
+    labs(title = "Distribution of Geocoding Deviation (meters)", x = "Deviation (meters)", y = "Density") +
+    theme_minimal()
+```
+
+Again, most of the houses have a low deviation, so let's drop the houses that have a deviation above 50 meters.
+
+```{r}
+residential_houses <- residential_houses |>
+    filter(desvio_metros <= 50)
+
+residential_houses |> glimpse()
+```
+
+## Calculating the distance to the nearest flood event
+
+Now, we will calculate the distance from each census tract to the nearest flood event. We will use the `st_distance` function from the `sf` package to calculate the distance between the census tracts and the flood events.
+
+```{r}
+census_tracts <- census_tracts |>
+    # First, enconter the nearest flood event for each house
+    mutate(nearest_flood_event_index = st_nearest_feature(geom, flood_events)) |>
+    # Then, calculate the distance to the nearest flood event
+    mutate(distance_to_nearest_flood_event = st_distance(geom, flood_events[nearest_flood_event_index, ], by_element = TRUE))
+    # Lastly, delete the nearest_flood_event column, as we don't need it anymore
+    # select(-nearest_flood_event_index)
+```
+
+# Creating a panel database of census tracts with the number of transactions and the exposure to flood events
+
+## Creating a base database with the census tracts and the weeks of the year
+
+```{r}
+final_database <- expand_grid(
+    census_tract = census_tracts$code_tract,
+    week = seq(1, 52)
+) |>
+    left_join(census_tracts, by = c("census_tract" = "code_tract")) |>
+    st_as_sf()
+```
+
+## Calculating the number of transactions per census tract per week
+
+```{r}
+transactions <-  st_join(residential_houses, census_tracts |> select(code_tract), join = st_within) |>
+    mutate(data_de_transacao = janitor::excel_numeric_to_date(as.numeric(data_de_transacao)),
+           week_of_transaction = lubridate::week(data_de_transacao)) |>
+    mutate(census_tract = code_tract) |>
+    st_drop_geometry() |>
+    filter(!is.na(week_of_transaction)) |>
+    mutate(transacted = 1L)
+```
+
+```{r}
+final_database <- final_database |>
+    left_join(
+        transactions |>
+            select(census_tract, week_of_transaction, transacted) |>
+            group_by(census_tract, week_of_transaction) |>
+            summarise(transactions = sum(transacted)),
+        by = c("census_tract" = "census_tract", "week" = "week_of_transaction"))

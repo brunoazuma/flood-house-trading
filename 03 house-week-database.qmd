@@ -10,6 +10,8 @@ library(janitor)
 library(geoarrow)
 library(arrow)
 library(sf)
+library(units)
+library(tmap)
 ```
 
 First, let's load the ITBI data and the flood events data that we have previously collected.
@@ -105,7 +107,7 @@ residential_houses |> glimpse()
 
 Lastly, before creating the house-week database, it will be useful to filter the database only to potential exposed houses, i.e., houses that are within a certain distance from any flood event. So, even if a house does not have a flood event in the same week, it is more likely to be affected by flooding events than a house that is far away from any flood event and, thus, more valid as a control house. We will use a cap distance of 200 meters for the flood events, which is a reasonable distance to consider that a house can be affected by a flooding event.
 
-First, let's create a buffer around the flood events with a radius of 200 meters and dissolve the buffers into a single multipolygon. Then, we will filter the itbi_data to keep only the houses that are within the buffer.
+First, let's create a buffer around the flood events with a radius of 200 meters and dissolve the buffers into a single multipolygon.
 
 ```{r}
 flood_buffer <- st_buffer(flood_events, dist = 200) |> st_union()
@@ -113,9 +115,79 @@ flood_buffer <- st_buffer(flood_events, dist = 200) |> st_union()
 plot(flood_buffer, col = "lightblue", main = "Flood Events Buffer (200m)")
 ```
 
+Then, we will calculate the distance of each house in the itbi_data to the nearest flood event.[^1]
+
+[^1]: Although we could use the geometry of the buffer to filter the houses or the `st_is_within_distance()` function, we will calculate the distance of each house to the nearest flood event to have more flexibility in the future and ease the sensivity analysis of the cap distance.
+
 ```{r}
-exposed_houses <- itbi_data[st_intersects(residential_houses, flood_buffer, sparse = FALSE), ]
-exposed_houses |> glimpse()
+residential_houses <- residential_houses |>
+    # First, enconter the nearest flood event for each house
+    mutate(nearest_flood_event_index = st_nearest_feature(geometry, flood_events)) |>
+    # Then, calculate the distance to the nearest flood event
+    mutate(distance_to_nearest_flood_event = st_distance(geometry, flood_events[nearest_flood_event_index, ], by_element = TRUE))
+    # Lastly, delete the nearest_flood_event column, as we don't need it anymore
+    # select(-nearest_flood_event_index)
+```
+
+Now, let's see the distribution of the distances to the nearest flood event to check if we can filter the data further.
+
+```{r}
+residential_houses |>
+    st_drop_geometry() |>
+    select(distance_to_nearest_flood_event) |>
+    filter(!is.na(distance_to_nearest_flood_event)) |>
+    ggplot(aes(x = as.numeric(distance_to_nearest_flood_event))) +
+    geom_histogram(binwidth = 10, fill = "lightblue", color = "black") +
+    labs(title = "Distribution of Distance to Nearest Flood Event (meters)", x = "Distance (meters)", y = "Count of transactions") +
+    # Change the x grid to appear in multiples of 50 meters
+    scale_x_continuous(breaks = seq(0, 4500, by = 200)) +
+    theme_minimal()
+```
+
+And the same distribution in a map, with 5 cateories from 0 to 1000 meters, and one category for all distances above 1000 meters.
+
+```{r}
+residential_houses |>
+    mutate(distance_category = case_when(
+        distance_to_nearest_flood_event <= set_units(200, "m") ~ "0-200",
+        distance_to_nearest_flood_event <= set_units(400, "m") ~ "201-400",
+        distance_to_nearest_flood_event <= set_units(600, "m") ~ "401-600",
+        distance_to_nearest_flood_event <= set_units(800, "m") ~ "601-800",
+        distance_to_nearest_flood_event <= set_units(1000, "m") ~ "801-1000",
+        TRUE ~ ">1000"
+    ), distance_category = factor(
+        distance_category,
+        levels = c("0-200", "201-400", "401-600", "601-800", "801-1000", ">1000")
+    )) |>
+    tm_shape() +
+    # tm_dots(
+    #     col = "distance_category",
+    #     fill.scale =  tm_scale_categorical(values = "distance_category"),
+    #     size = 0.1,
+    #     title.col = "Distance (m)"
+    # ) +
+    tm_symbols(
+        size=0.2,
+        fill="distance_category",
+        fill.scale = tm_scale_categorical(values = "-matplotlib.rd_yl_bu"),
+        fill.legend = tm_legend(
+            title = "Distance to Nearest Flood Event (m)",
+            size=1,
+            position = c("right", "top")
+        ),
+        lwd = 0
+    ) +
+    tm_legend(
+        legend.outside = TRUE,
+        legend.position = c("right", "top"),
+        title = "Distance to Nearest Flood Event (m)"
+    ) +
+    tm_title("Distance to Nearest Flood Event")
+```
+
+```{r}
+# exposed_houses <- itbi_data[st_intersects(residential_houses, flood_buffer, sparse = FALSE), ]
+# exposed_houses |> glimpse()
 ```
 
 # Creating the house-week database

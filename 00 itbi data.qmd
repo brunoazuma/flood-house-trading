@@ -124,5 +124,6 @@ itbi_2025_data |> glimpse()
 itbi_2025_data <- st_transform(itbi_2025_data, crs = "OGC:CRS84")
 
 # Save the geocoded data to a geoparquet file for later use
-write_parquet(itbi_2025_data, file.path(itbi_data_dir, "itbi_2025_geocoded.parquet"))
+sfarrow::st_write_parquet(itbi_2025_data, file.path(itbi_data_dir, "itbi_2025_geocoded.parquet"))
+
 ```

@@ -155,3 +155,93 @@ final_database <- final_database |>
             group_by(census_tract, week_of_transaction) |>
             summarise(transactions = sum(transacted)),
         by = c("census_tract" = "census_tract", "week" = "week_of_transaction"))
+```
+
+# Adding flood events to the database
+
+## Adding week and year columns to the flood events data
+
+```{r}
+flood_events <- flood_events |>
+    mutate(week = lubridate::week(data),
+           year = lubridate::year(data))
+```
+
+## Adding census tract information to the flood events data
+
+```{r}
+flood_events <- st_join(flood_events, census_tracts |> select(code_tract), join = st_within) |>
+    mutate(census_tract = code_tract) |>
+    select(-code_tract)
+```
+
+## Adding the number of flood events per census tract per week to the final database
+
+```{r}
+final_database <- final_database |>
+    left_join(
+        flood_events |>
+            filter(year == 2025) |>
+            st_drop_geometry() |>
+            group_by(census_tract, week) |>
+            summarise(flood_events = n()),
+        by = c("census_tract" = "census_tract", "week" = "week"))
+```
+
+# Filtering the final database based on exposure to flood events
+
+```{r}
+final_database_filtered <- final_database |>
+    filter(distance_to_nearest_flood_event <= units::set_units(0, "m")) |>
+    mutate(flood_events = replace_na(flood_events, 0),
+           transactions = replace_na(transactions, 0),
+           has_flood_event = if_else(flood_events > 0, 1L, 0L))
+```
+
+# Visualizing the database
+
+First, let's visualize the census tracts categorized by the inclusion criteria of the final database. We will use the `tmap` package to create a map of the census tracts, with the color of the census tracts indicating whether they are included in the final database or not.
+```{r}
+library(tmap)
+
+included_tracts <- final_database_filtered |> pull(census_tract) |> unique()
+treated_tracts <- final_database_filtered |> filter(has_flood_event == 1) |> pull(census_tract) |> unique()
+
+map_tracts <- census_tracts |>
+    mutate(
+        included = code_tract %in% included_tracts,
+        treated = code_tract %in% treated_tracts,
+        category = case_when(
+            included & treated ~ "Treated",
+            included & !treated ~ "Control",
+            !included ~ "Not Included"
+        )
+    ) |>
+    select(-included, -treated)
+```
+
+```{r}
+# Plot all the census tracts with grey color
+tmap::tm_shape(map_tracts) +
+    # Set color based on category, with a color palette of your choice
+    tm_polygons(
+        col = "category",
+        palette = c("Treated" = "red", "Control" = "blue", "Not Included" = "grey"),
+        lwd = 0
+    ) +
+    tm_legend(title = "Census Tract Category", position = c("right", "center")) +
+    tm_title("Census Tracts Included in the Final Database", position = c("center", "top"))
+```
+
+# Checking the balance between treated and control groups
+
+```{r}
+final_database_filtered |>
+    st_drop_geometry() |>
+    group_by(has_flood_event) |>
+    # count distinct census tracts
+    summarise(count = n_distinct(census_tract)) |>
+    mutate(percentage = count / sum(count) * 100, percentage = round(percentage, 2)) |>
+    arrange(desc(count)) |>
+    DT::datatable()
+```

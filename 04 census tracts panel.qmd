@@ -2,7 +2,7 @@
 title: "Flood data Data"
 ---
 
-Now, with the transactions, census tracts, and flood events data collected, we can start preparing the data for a panel regression model. The first approach we will take is to aggregate the data by census tract, creating a database of census tracts with a discrete variable indicating how many transactions have occurred in that week, and an exposure variable with the sum of the inverse distance to all of the flood events that happened in the same week. We will also need to select a cap distance for the flood events, as we will not consider events that are too far away from the house.
+Now, with the transactions, census tracts, and flood events data collected, we can start preparing the data for a panel regression model. The first approach we will take is to aggregate the data by census tract, creating a database of census tracts with a discrete variable indicating how many transactions have occurred in that month, and an exposure variable with the sum of the inverse distance to all of the flood events that happened in the same month. We will also need to select a cap distance for the flood events, as we will not consider events that are too far away from the house.
 
 ```{r}
 library(tidyverse)
@@ -124,26 +124,26 @@ census_tracts <- census_tracts |>
 
 # Creating a panel database of census tracts with the number of transactions and the exposure to flood events
 
-## Creating a base database with the census tracts and the weeks of the year
+## Creating a base database with the census tracts and the months of the year
 
 ```{r}
 final_database <- expand_grid(
     census_tract = census_tracts$code_tract,
-    week = seq(1, 52)
+    month = seq(1, 12)
 ) |>
     left_join(census_tracts, by = c("census_tract" = "code_tract")) |>
     st_as_sf()
 ```
 
-## Calculating the number of transactions per census tract per week
+## Calculating the number of transactions per census tract per month
 
 ```{r}
 transactions <-  st_join(residential_houses, census_tracts |> select(code_tract), join = st_within) |>
     mutate(data_de_transacao = janitor::excel_numeric_to_date(as.numeric(data_de_transacao)),
-           week_of_transaction = lubridate::week(data_de_transacao)) |>
+           month_of_transaction = lubridate::month(data_de_transacao)) |>
     mutate(census_tract = code_tract) |>
     st_drop_geometry() |>
-    filter(!is.na(week_of_transaction)) |>
+    filter(!is.na(month_of_transaction)) |>
     mutate(transacted = 1L)
 ```
 
@@ -151,19 +151,19 @@ transactions <-  st_join(residential_houses, census_tracts |> select(code_tract)
 final_database <- final_database |>
     left_join(
         transactions |>
-            select(census_tract, week_of_transaction, transacted) |>
-            group_by(census_tract, week_of_transaction) |>
+            select(census_tract, month_of_transaction, transacted) |>
+            group_by(census_tract, month_of_transaction) |>
             summarise(transactions = sum(transacted)),
-        by = c("census_tract" = "census_tract", "week" = "week_of_transaction"))
+        by = c("census_tract" = "census_tract", "month" = "month_of_transaction"))
 ```
 
 # Adding flood events to the database
 
-## Adding week and year columns to the flood events data
+## Adding month and year columns to the flood events data
 
 ```{r}
 flood_events <- flood_events |>
-    mutate(week = lubridate::week(data),
+    mutate(month = lubridate::month(data),
            year = lubridate::year(data))
 ```
 
@@ -175,7 +175,7 @@ flood_events <- st_join(flood_events, census_tracts |> select(code_tract), join 
     select(-code_tract)
 ```
 
-## Adding the number of flood events per census tract per week to the final database
+## Adding the number of flood events per census tract per month to the final database
 
 ```{r}
 final_database <- final_database |>
@@ -183,16 +183,16 @@ final_database <- final_database |>
         flood_events |>
             filter(year == 2025) |>
             st_drop_geometry() |>
-            group_by(census_tract, week) |>
+            group_by(census_tract, month) |>
             summarise(flood_events = n()),
-        by = c("census_tract" = "census_tract", "week" = "week"))
+        by = c("census_tract" = "census_tract", "month" = "month"))
 ```
 
 # Filtering the final database based on exposure to flood events
 
 ```{r}
 final_database_filtered <- final_database |>
-    filter(distance_to_nearest_flood_event <= units::set_units(0, "m")) |>
+    filter(distance_to_nearest_flood_event <= units::set_units(400, "m")) |>
     mutate(flood_events = replace_na(flood_events, 0),
            transactions = replace_na(transactions, 0),
            has_flood_event = if_else(flood_events > 0, 1L, 0L))
@@ -231,6 +231,48 @@ tmap::tm_shape(map_tracts) +
     ) +
     tm_legend(title = "Census Tract Category", position = c("right", "center")) +
     tm_title("Census Tracts Included in the Final Database", position = c("center", "top"))
+```
+
+# Checking the transaction support through the tracts and periods
+
+```{r}
+final_database_filtered |>
+    st_drop_geometry() |>
+    group_by(month) |>
+    summarise(transactions = sum(transactions)) |>
+    arrange(month) |>
+    DT::datatable()
+```
+
+```{r}
+final_database_filtered |>
+    st_drop_geometry() |>
+    group_by(census_tract) |>
+    summarise(transactions = sum(transactions)) |>
+    arrange(transactions) |>
+    DT::datatable()
+```
+
+```{r}
+final_database_filtered |>
+    st_drop_geometry() |>
+    ggplot(aes(x = transactions)) +
+    geom_histogram(binwidth = 1, fill = "lightblue", color = "black") +
+    labs(title = "Distribution of Transactions per Record", x = "Number of Transactions", y = "Count") +
+    theme_minimal()
+```
+
+Several census tracts have no transactions at all. This is not a problem with the model to evaluate the effect of flood events on the number of transactions, but it prevent the model to evaluate the effect of flood events on the price of the transactions, as there are no transactions to evaluate the price. For now, we will keep the census tracts with no transactions, but we will need to filter them out when we run the model to evaluate the effect of flood events on the price of the transactions.
+
+# Checking treatment support through all periods
+
+```{r}
+final_database_filtered |>
+    st_drop_geometry() |>
+    group_by(month) |>
+    summarise(has_treatment = n_distinct(has_flood_event)>1) |>
+    arrange(month) |>
+    DT::datatable()
 ```
 
 # Checking the balance between treated and control groups

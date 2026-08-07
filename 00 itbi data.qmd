@@ -54,12 +54,44 @@ Finally, we read the files into R with the `readxl` package and combine the mont
 read_itbi_year <- function(year, data_dir) {
   path <- file.path(data_dir, paste0("itbi_", year, ".xlsx"))
   sheets <- readxl::excel_sheets(path)
+  monthly_sheets <- sheets[seq_len(min(12, length(sheets)))]
 
-  map_dfr(
-    sheets[seq_len(min(12, length(sheets)))],
-    ~ readxl::read_excel(path, sheet = .x, col_types = "text")
-  ) |>
-    mutate(data_year = as.integer(year))
+  # February provides the canonical column names and order for the year.
+  february_sheet <- monthly_sheets[
+    str_detect(str_to_lower(monthly_sheets), "fev|fevereiro|february")
+  ][[1]]
+  february <- readxl::read_excel(
+    path,
+    sheet = february_sheet,
+    col_types = "text"
+  )
+  column_names <- names(february)
+
+  map_dfr(monthly_sheets, function(sheet) {
+    is_january_2024 <- year == "2024" &&
+      str_detect(str_to_lower(sheet), "jan|janeiro|january")
+    is_october_2024 <- year == "2024" &&
+      str_detect(str_to_lower(sheet), "out|outubro|october")
+
+    data <- readxl::read_excel(
+      path,
+      sheet = sheet,
+      col_names = FALSE,
+      col_types = "text",
+      .name_repair = "minimal"
+    )
+
+    if (!is_january_2024 && !is_october_2024) {
+      # Other monthly sheets include their own header row.
+      data <- data[-1, , drop = FALSE]
+    }
+
+    # January has no header row; all sheets use February's schema.
+    setNames(data, column_names) |>
+      select(all_of(column_names))
+  }) |>
+    mutate(data_year = as.integer(year)) |>
+    filter(!grepl("CEP", CEP))  # Remove any repeated header rows
 }
 
 itbi_data <- map_dfr(names(itbi_urls), read_itbi_year, data_dir = itbi_data_dir)

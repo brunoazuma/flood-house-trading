@@ -155,9 +155,17 @@ itbi_data |> head(500) |> DT::datatable()
 ```{r}
 itbi_data <- itbi_data |>
   filter(!is.na(geometry)) |>
-  filter(proporcao_transmitida_percent == 100)
+  filter(proporcao_transmitida_percent == "100" | proporcao_transmitida_percent == "100.0")
 
 itbi_data |> glimpse()
+```
+
+```{r}
+itbi_data |>
+  st_drop_geometry() |>
+  group_by(data_year) |>
+  summarise(n = n()) |>
+  DT::datatable()
 ```
 
 ```{r}

@@ -17,7 +17,7 @@ library(tmap)
 First, let's load the ITBI data, the census tracts data, and the flood events data that we have previously collected.
 
 ```{r}
-itbi_data <- sfarrow::st_read_parquet("data/itbi/itbi_2025_geocoded.parquet")
+itbi_data <- sfarrow::st_read_parquet("data/itbi/itbi_geocoded.parquet")
 # itbi_data$geometry <- st_as_sfc(itbi_data$geometry)
 # st_geometry(itbi_data) <- "geometry"
 census_tracts <- sfarrow::st_read_parquet("data/census/census_tracts.parquet")
@@ -58,7 +58,8 @@ itbi_data |>
 
 ```{r}
 residential_houses <- itbi_data |>
-    filter(str_detect(descricao_do_padrao_iptu, "RESIDENCIAL"))
+    mutate(year = as.integer(data_year)) |>
+    filter(grepl("RESIDENCIAL", descricao_do_padrao_iptu, ignore.case = TRUE) | grepl("RESIDENCIAL", acc_iptu_27, ignore.case = TRUE))
 
 residential_houses |> glimpse()
 ```
@@ -124,11 +125,16 @@ census_tracts <- census_tracts |>
 
 # Creating a panel database of census tracts with the number of transactions and the exposure to flood events
 
-## Creating a base database with the census tracts and the months of the year
+## Creating a base database with the census tracts, years, and months
 
 ```{r}
+panel_years <- residential_houses |>
+    st_drop_geometry() |>
+    distinct(year)
+
 final_database <- expand_grid(
     census_tract = census_tracts$code_tract,
+    year = panel_years$year,
     month = seq(1, 12)
 ) |>
     left_join(census_tracts, by = c("census_tract" = "code_tract")) |>
@@ -138,12 +144,12 @@ final_database <- expand_grid(
 ## Calculating the number of transactions per census tract per month
 
 ```{r}
-transactions <-  st_join(residential_houses, census_tracts |> select(code_tract), join = st_within) |>
+transactions <- st_join(residential_houses, census_tracts |> select(code_tract), join = st_within) |>
     mutate(data_de_transacao = janitor::excel_numeric_to_date(as.numeric(data_de_transacao)),
            month_of_transaction = lubridate::month(data_de_transacao)) |>
     mutate(census_tract = code_tract) |>
     st_drop_geometry() |>
-    filter(!is.na(month_of_transaction)) |>
+    filter(!is.na(year), !is.na(month_of_transaction)) |>
     mutate(transacted = 1L)
 ```
 
@@ -151,10 +157,10 @@ transactions <-  st_join(residential_houses, census_tracts |> select(code_tract)
 final_database <- final_database |>
     left_join(
         transactions |>
-            select(census_tract, month_of_transaction, transacted) |>
-            group_by(census_tract, month_of_transaction) |>
-            summarise(transactions = sum(transacted)),
-        by = c("census_tract" = "census_tract", "month" = "month_of_transaction"))
+            select(census_tract, year, month_of_transaction, transacted) |>
+            group_by(census_tract, year, month_of_transaction) |>
+            summarise(transactions = sum(transacted), .groups = "drop"),
+        by = c("census_tract", "year", "month" = "month_of_transaction"))
 ```
 
 # Adding flood events to the database
@@ -181,11 +187,10 @@ flood_events <- st_join(flood_events, census_tracts |> select(code_tract), join 
 final_database <- final_database |>
     left_join(
         flood_events |>
-            filter(year == 2025) |>
             st_drop_geometry() |>
-            group_by(census_tract, month) |>
-            summarise(flood_events = n()),
-        by = c("census_tract" = "census_tract", "month" = "month"))
+            group_by(census_tract, year, month) |>
+            summarise(flood_events = n(), .groups = "drop"),
+        by = c("census_tract", "year", "month"))
 ```
 
 # Filtering the final database based on exposure to flood events
@@ -238,9 +243,9 @@ tmap::tm_shape(map_tracts) +
 ```{r}
 final_database_filtered |>
     st_drop_geometry() |>
-    group_by(month) |>
+    group_by(year, month) |>
     summarise(transactions = sum(transactions)) |>
-    arrange(month) |>
+    arrange(year, month) |>
     DT::datatable()
 ```
 
@@ -269,9 +274,9 @@ Several census tracts have no transactions at all. This is not a problem with th
 ```{r}
 final_database_filtered |>
     st_drop_geometry() |>
-    group_by(month) |>
+    group_by(year, month) |>
     summarise(has_treatment = n_distinct(has_flood_event)>1) |>
-    arrange(month) |>
+    arrange(year, month) |>
     DT::datatable()
 ```
 

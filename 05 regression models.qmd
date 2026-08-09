@@ -153,3 +153,7 @@ summary(agg.es)
 ggdid(agg.es)
 ```
 
+With the results above, no significant effect of flooding events on the number of transactions in the census tracts was found. So, the results don't support the hypothesis that flooding events have a significant impact on real estate liquidity in the census tracts. However, it is worth noticing that the number of transactions is a very rough measure of real estate liquidity, and further research could be done to investigate the impact of flooding events on real estate prices and time on the market, which are more direct measures of real estate liquidity.
+
+# Running the CS2021 DID with multiple periods and covariates
+

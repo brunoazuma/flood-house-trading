@@ -292,3 +292,22 @@ final_database_filtered |>
     arrange(desc(count)) |>
     DT::datatable()
 ```
+
+Although the number of treated census tracts is much smaller than the number of control census tracts, both the treated and control census tracts are well distributed across the city. Also, there is more than 1,000 treated census tracts, which should be enough to run a regression model with a fixed effect for each census tract or some variation of it.
+
+# Exporting the final database to a parquet file
+
+```{r}
+data_dir <- "data"
+dir.create(data_dir, showWarnings = FALSE)
+final_database_filtered_dir <- file.path(data_dir, "final_database")
+dir.create(final_database_filtered_dir, showWarnings = FALSE)
+```
+
+```{r}
+# As the parquet writer doesn't save geographical metadata, we need to project the data in OGC:CRS84, as specified in https://github.com/opengeospatial/geoparquet/blob/main/format-specs/compatible-parquet.md
+final_database_filtered <- st_transform(final_database_filtered, crs = "OGC:CRS84")
+
+# Save the combined geocoded data to a geoparquet file for later use
+sfarrow::st_write_parquet(final_database_filtered, file.path(final_database_filtered_dir, "census_transactions_flooding.parquet"))
+```

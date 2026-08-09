@@ -23,7 +23,7 @@ library(did)
 data <- sfarrow::st_read_parquet("data/final_database/census_transactions_flooding.parquet")
 ```
 
-# Running the CS2021 did with multiple periods
+# Running the CS2021 did with multiple quarters
 
 ## Selecting the control group
 
@@ -49,13 +49,13 @@ There are more than 20,000 tracts in the control group still, which will allow f
 
 ## Creating the `G`, `D` and `t` variables
 
-For the CS2021 DID with multiple periods, I need to create the `G` variable, which indicates the first period in which the unit was treated. Also, lets create a `D` and `t`variable, to keep the data aligned with the notation in CS2021. The `D` variable indicates whether the unit is treated in a given period. The `t` variable indicates the period in which the unit is observed. The `G` variable will be set to 0 for the control group, and to the first period in which the unit was treated for the treated group.
+For the CS2021 DID with multiple periods, I need to create the `G` variable, which indicates the first period in which the unit was treated. Also, lets create a `D` and `t`variable, to keep the data aligned with the notation in CS2021. The `D` variable indicates whether the unit is treated in a given quarter. The `t` variable indicates the quarter in which the unit is observed. The `G` variable will be set to 0 for the control group, and to the first quarter in which the unit was treated for the treated group.
 
 ```{r}
 no_prior_floods_control <- no_prior_floods_control |>
     mutate(
         D = has_flood_event,
-        t = month + (year-2023)*12
+        t = (year - 2023) * 4 + ceiling(month / 3)
     )
     
     
@@ -67,7 +67,6 @@ no_prior_floods_control <- no_prior_floods_control |>
             summarise(G = max(t*D))
     )
 
-
 no_prior_floods_control |>
     sf::st_drop_geometry() |>
     group_by(G) |>
@@ -75,13 +74,26 @@ no_prior_floods_control |>
     DT::datatable()
 ```
 
-## Dropping the first periods for the pre-treatment trends
+## Aggregating by quarter
 
-Lastly, I will drop the first three periods of the sample, so that there are some periods before the first treatment period to allow the inspection of the pre-treatment trends. (It is worth noticing that, as we kept only the units that have not been treated in any period as control group, dropping the first periods will make the treated group to be composed only by units that have been treated after the first three periods, which is a desirable feature of the sample)
+The `did` package expects the data to have a single observation per unit per period. Therefore, I need to aggregate the data by quarter, summing the number of transactions in each quarter for each unit.
 
 ```{r}
 no_prior_floods_control <- no_prior_floods_control |>
-    filter(G > 3 | G == 0)
+    group_by(census_tract, t, G, geom) |>
+    summarise(
+        transactions = sum(transactions)
+    ) |>
+    ungroup()
+```
+
+## Dropping the first quarters for the pre-treatment trends
+
+Lastly, I will drop the first three quarters of the sample, so that there are some quarters before the first treatment period to allow the inspection of the pre-treatment trends. (It is worth noticing that, as we kept only the units that have not been treated in any period as control group, dropping the first quarters will make the treated group to be composed only by units that have been treated after the first three quarters, which is a desirable feature of the sample)
+
+```{r}
+no_prior_floods_control <- no_prior_floods_control |>
+    filter(G > 1 | G == 0)
 ```
 
 ## Checking for unbalanced groups
@@ -91,7 +103,7 @@ missing_tracts <- no_prior_floods_control |>
     sf::st_drop_geometry() |>
     group_by(census_tract) |>
     summarise(T = n_distinct(t)) |>
-    filter(T < 36) |>
+    filter(T < 12) |>
     arrange(desc(T))
 
 missing_tracts |>

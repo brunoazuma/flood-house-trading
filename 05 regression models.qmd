@@ -1,0 +1,139 @@
+---
+title: "Flood data Data"
+
+format:
+  html:
+    embed-resources: true
+---
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(geoarrow)
+library(arrow)
+library(sf)
+library(units)
+library(tmap)
+library(did)
+```
+
+# Loading the database
+
+```{r}
+data <- sfarrow::st_read_parquet("data/final_database/census_transactions_flooding.parquet")
+```
+
+# Running the CS2021 did with multiple periods
+
+## Selecting the control group
+
+As the staggered treatment adoption assumption, along with homogeneous treatment effects, implies that "the unids do not 'forget' about their treatment experience", we will keep as control group only the units that have not been treated in any period. Specifically, we will keep as control group only the tracts that have no prior flood events since the beginning of the sample period (2013). First, let's see the number of untreated tracts after this filtering before we dive in any further details.
+
+```{r}
+no_prior_floods_control <- data |>
+    mutate(D = ave(has_flood_event, census_tract, FUN = max)) |>
+    filter(
+        D == 1 | distance_to_nearest_flood_event > units::set_units(200, "m")
+    )
+```
+
+```{r}
+no_prior_floods_control |>
+    sf::st_drop_geometry() |>
+    group_by(has_flood_event) |>
+    summarise(n = n_distinct(census_tract)) |>
+    DT::datatable()
+```
+
+There are more than 20,000 tracts in the control group still, which will allow for further stratification of the control group in the future. For now, we will keep the control group as is and run the CS2021 did with multiple periods.
+
+## Creating the `G`, `D` and `t` variables
+
+For the CS2021 DID with multiple periods, I need to create the `G` variable, which indicates the first period in which the unit was treated. Also, lets create a `D` and `t`variable, to keep the data aligned with the notation in CS2021. The `D` variable indicates whether the unit is treated in a given period. The `t` variable indicates the period in which the unit is observed. The `G` variable will be set to 0 for the control group, and to the first period in which the unit was treated for the treated group.
+
+```{r}
+no_prior_floods_control <- no_prior_floods_control |>
+    mutate(
+        D = has_flood_event,
+        t = month + (year-2023)*12
+    )
+    
+    
+no_prior_floods_control <- no_prior_floods_control |>
+    merge(
+        no_prior_floods_control |>
+            sf::st_drop_geometry() |>
+            group_by(census_tract) |>
+            summarise(G = max(t*D))
+    )
+
+
+no_prior_floods_control |>
+    sf::st_drop_geometry() |>
+    group_by(G) |>
+    summarise(n = n_distinct(census_tract)) |>
+    DT::datatable()
+```
+
+## Dropping the first periods for the pre-treatment trends
+
+Lastly, I will drop the first three periods of the sample, so that there are some periods before the first treatment period to allow the inspection of the pre-treatment trends. (It is worth noticing that, as we kept only the units that have not been treated in any period as control group, dropping the first periods will make the treated group to be composed only by units that have been treated after the first three periods, which is a desirable feature of the sample)
+
+```{r}
+no_prior_floods_control <- no_prior_floods_control |>
+    filter(G > 3 | G == 0)
+```
+
+## Checking for unbalanced groups
+
+```{r}
+missing_tracts <- no_prior_floods_control |>
+    sf::st_drop_geometry() |>
+    group_by(census_tract) |>
+    summarise(T = n_distinct(t)) |>
+    filter(T < 36) |>
+    arrange(desc(T))
+
+missing_tracts |>
+    DT::datatable()
+```
+
+## Running the CS2021 DID with multiple periods
+
+```{r}
+attgt <- did::att_gt(
+    yname = "transactions",
+    tname = "t",
+    idname = "census_tract",
+    gname = "G",
+    xformla = ~ 1,
+    data = no_prior_floods_control
+)
+
+summary(attgt)
+```
+
+```{r}
+agg.simple <- aggte(attgt, type = "simple")
+summary(agg.simple)
+```
+
+```{r}
+agg.gs <- aggte(attgt, type = "group")
+summary(agg.gs)
+```
+
+```{r}
+ggdid(agg.gs)
+```
+
+```{r}
+agg.es <- did::aggte(attgt, type = "dynamic")
+
+summary(agg.es)
+```
+
+```{r}
+ggdid(agg.es)
+```
+

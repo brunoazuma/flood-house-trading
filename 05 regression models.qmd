@@ -93,7 +93,7 @@ Lastly, I will drop the first three quarters of the sample, so that there are so
 
 ```{r}
 no_prior_floods_control <- no_prior_floods_control |>
-    filter(G > 1 | G == 0)
+    filter(G > 3 | G == 0)
 ```
 
 ## Checking for unbalanced groups
@@ -123,6 +123,10 @@ attgt <- did::att_gt(
 )
 
 summary(attgt)
+```
+
+```{r}
+ggdid(attgt)
 ```
 
 ```{r}

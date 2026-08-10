@@ -1,6 +1,9 @@
 ---
 title: "Flood data Data"
 
+bibliography: 
+  - references.bib
+
 format:
   html:
     embed-resources: true
@@ -119,6 +122,7 @@ attgt <- did::att_gt(
     idname = "census_tract",
     gname = "G",
     xformla = ~ 1,
+    clustervars = "census_tract",
     data = no_prior_floods_control
 )
 
@@ -157,3 +161,119 @@ With the results above, no significant effect of flooding events on the number o
 
 # Running the CS2021 DID with multiple periods and covariates
 
+## Selecting the covariates
+
+Now, I will select some covariates to include in the model, to help on the evaluation of the possibility of violation of the parallel trends assumption on the first model. Revising some of the recent literature on the impact of flooding events on real estate prices, the variables tend to be a) related to the property itself, b) related to environmental amenities, and c) related to socioeconomic characteristics of the neighborhood. For the record, I'll enumerate the covariates used in four recent papers on the topic.
+
+@chakraborty_social_2014 uses:
+
+* Non-Hispanic black (%)
+* Hispanic (%)
+* Median household income ($)
+* Below poverty (%)
+* Median housing value ($)
+* Vacant: seasonal/recreational use (%)
+
+@zhang_flood_2016 uses:
+
+* **Lnp:** Log of sales price
+* **Living area:** Living area in 1000 ft²
+* **Bedrooms:** # of bedrooms
+* **Garage stalls:** # of garage stalls
+* **Age:** Age of the house in years
+* **One story:** = 1, if house style is one story
+* **Two story:** = 1, if house style is two stories
+* **Bilevel:** = 1, if house style is bi-level
+* **Baths:** # of bathrooms
+* **Attached garage:** = 1, if house has attached garage
+* **Detached garage:** = 1, if house has detached garage
+* **Ac:** = 1, if house has air conditioning
+* **Water electronic:** = 1, if house has electronic water heater
+* **Water gas:** = 1, if house has gas water heater
+* **Water oil:** = 1, if house has oil water heater
+* **Fireplace:** = 1, if house has fireplace
+* **Wood deck:** = 1, if house has wood deck
+* **Patio:** = 1, if house has patio
+* **Poured foundation:** = 1, if house has poured foundation
+* **Wood foundation:** = 1, if house has wood foundation
+* **Slab foundation:** = 1, if house has slab foundation
+* **Finished garage:** = 1, if garage is finished
+* **Heated garage:** = 1, if garage is heated
+* **Golf:** = 1, if house is abutting golf course
+* **Park:** = 1, if house is abutting park
+* **River:** = 1, if house is abutting river
+* **Cass:** = 1, if house is located in Cass county
+
+@zhang_flood_2019 uses: 
+
+* **y:** Sales price
+* **Livarea:** Living area in 1000 sqft
+* **Bedrooms:** # of bedrooms
+* **Garagestal:** # of garage stalls
+* **Age:** Age of the house in years
+* **Onestory:** =1, if house style is one story
+* **Twostory:** =1, if house style is two stories
+* **Bilevel:** =1, if house style is bi-level
+* **Baths:** # of bathrooms
+* **Atgarg:** =1, if house has attached garage
+* **Ac:** =1, if house has air conditioning
+* **Waterelect:** =1, if house has electronic water heater
+* **Watergas:** =1, if house has gas water heater
+* **Fireplace:** =1, if house has fireplace
+* **Wooddeck:** =1, if house has wood deck
+* **Patio:** =1, if house has patio
+* **Pouredfd:** =1, if house has poured foundation
+* **Woodfd:** =1, if house has wood foundation
+* **Slab:** =1, if house has slab foundation
+* **Finishedga:** =1, if garage is finished
+* **Heatedga:** =1, if garage is heated
+* **Golf:** =1, if house is abutting golf course
+* **Park:** =1, if house is abutting park
+* **River:** =1, if house is abutting river
+* **Cass:** =1, if house is located in Cass county
+* **Airport_Dist:** Distance to airport in miles
+* **Citycenter_Dist:** Distance to city center in miles
+
+@rajapaksa_impact_2017 uses:
+
+* **R_PR:** House sale price adjusted to 2013 quarte 1 price
+* **BEDRM:** Number of bed rooms
+* **BATHRM:** Number of bathrooms
+* **GARAGE:** Number of garage spaces
+* **AREA:** Total area of land
+* **Stories:** Number of stories in the house
+* **Pool:** Dummy variable: 1 if a swimming pool is present, 0 otherwise
+* **Garden:** Dummy variable: 1 if a garden is included and 0 otherwise. (The presence of well-maintained garden at the time of selling is considered as a presence of a garden)
+* **ELEV:** Elevation
+* **streem:** Distance in meters to the Brisbane river or stream (major creaks linked to the Brisbane river)
+* **INCOME:** Medium household income in the mesh block (based on 2011 census and statistics survey)
+* **parkdis:** Direct distance in meters to the closest park
+* **highway:** Direct distance in meters to the highway
+* **Time:** Months starting from 2006 January
+* **afHT:** Time variable for high-income suburbs (time*high-income suburbs)
+* **afMT:** Time variable for medium-income suburbs (time*medium-income suburbs)
+* **afLT:** Time variable for low-income suburbs (time*low-income suburbs)
+* **afHRD:** Distance in meters to the stream of high-income suburbs (streem*high-income suburb)
+* **afMRD:** Distance in meters to the stream of medium-income suburbs (streem*medium-income suburb)
+* **afLRD:** Distance in meters to the stream of low-income suburbs (streem*low-income suburbs)
+* **afHEL:** Elevation of high-income suburbs (ELEV*high-income suburbs)
+* **afMEL:** Elevation of medium-income suburbs (ELEV*medium-income suburbs)
+* **afLEL:** Elevation of low-income suburbs (ELEV*low-income suburbs)
+
+I don't have more details of the properties in the ITBI data, so I will use only the variables related to environmental amenities and socioeconomic characteristics of the neighborhood. Besides, as the ITBI data is aggregated at the census tract level, it doesn't seem appropriate to use variables related to the property itself.
+
+So, by examining the variables used in the papers above, I will use the following covariates in the model:
+
+* Black and brown population (%)
+* Indigenous population (%)
+* Median household income ($)
+* Below poverty (%)
+* Median housing value ($)
+* Direct distance to city CBD in meters
+* Direct distance to Pinheiros River in meters
+* Direct distance to Tietê River in meters
+* Direct distance in meters to the closest park
+
+The variables selected above are also adapted to the São Paulo context, as the variables related to the rivers are adapted to the Pinheiros and Tietê rivers, which are the main rivers in São Paulo, and the demographic variables are adapted to the Brazilian context.
+
+Some of the variables above are available in the census data, while others are calculated from geospatial provided by the São Paulo City Hall digital map, named GeoSampa.

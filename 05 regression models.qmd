@@ -266,12 +266,9 @@ So, by examining the variables used in the papers above, I will use the followin
 
 * Black and brown population (%)
 * Indigenous population (%)
-* Median household income ($)
-* Below poverty (%)
-* Median housing value ($)
+* Mean household income ($)
 * Direct distance to city CBD in meters
-* Direct distance to Pinheiros River in meters
-* Direct distance to Tietê River in meters
+* Direct distance to the nearest body of water in meters
 * Direct distance in meters to the closest park
 
 The variables selected above are also adapted to the São Paulo context, as the variables related to the rivers are adapted to the Pinheiros and Tietê rivers, which are the main rivers in São Paulo, and the demographic variables are adapted to the Brazilian context.

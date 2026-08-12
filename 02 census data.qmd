@@ -4,6 +4,10 @@ title: "ITBI Data"
 
 ```{r}
 library(tidyverse)
+library(sf)
+library(sfarrow)
+library(geobr)
+library(censobr)
 ```
 
 # Collecting Census tracts
@@ -36,8 +40,6 @@ Based on the documentation of `censobr` package, we need the following variables
 
 
 ```{r}
-census_tracts <- sfarrow::st_read_parquet(file.path(census_data_dir, "census_tracts.parquet"))
-
 # read the census data from censobr
 tracts_basic <- censobr::read_tracts(year = 2022, dataset = "Basico")
 tracts_people <- censobr::read_tracts(year = 2022, dataset = "Pessoas")

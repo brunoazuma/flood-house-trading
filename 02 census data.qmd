@@ -24,6 +24,35 @@ census_tracts <- geobr::read_census_tract(code_tract = 3550308, year = 2022)
 census_tracts |> head(200) |> DT::datatable()
 ```
 
+# Collecting Census Data
+
+Based on the documentation of `censobr` package, we need the following variables:
+
+- raca_V01318: color/race is black
+- raca_V01320: color/race is brown
+- raca_V01321: color/race is indigenous
+- V0001: total population
+
+```{r}
+# read the census data from censobr
+tracts_basic <- censobr::read_tracts(year = 2022, dataset = "Basico")
+tracts_people <- censobr::read_tracts(year = 2022, dataset = "Pessoas")
+```
+
+```{r}
+tracts_basic <- tracts_basic |> select(code_tract, V0001)
+tracts_people <- tracts_people |> select(code_tract, raca_V01318, raca_V01320, raca_V01321)
+
+census_tracts <- census_tracts |>
+    left_join(tracts_basic, by = "code_tract", copy=TRUE) |>
+    left_join(tracts_people, by = "code_tract", copy=TRUE) |>
+    mutate(
+        pct_black = raca_V01318 / V0001,
+        pct_brown = raca_V01320 / V0001,
+        pct_indigenous = raca_V01321 / V0001
+    ) |>
+    select(-raca_V01318, -raca_V01320, -raca_V01321)
+```
 
 ```{r}
 sfarrow::st_write_parquet(census_tracts, file.path(census_data_dir, "census_tracts.parquet"))

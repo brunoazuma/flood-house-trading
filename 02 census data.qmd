@@ -32,26 +32,34 @@ Based on the documentation of `censobr` package, we need the following variables
 - raca_V01320: color/race is brown
 - raca_V01321: color/race is indigenous
 - V0001: total population
+- V06004: mean household income
+
 
 ```{r}
+census_tracts <- sfarrow::st_read_parquet(file.path(census_data_dir, "census_tracts.parquet"))
+
 # read the census data from censobr
 tracts_basic <- censobr::read_tracts(year = 2022, dataset = "Basico")
 tracts_people <- censobr::read_tracts(year = 2022, dataset = "Pessoas")
+tracts_income <- censobr::read_tracts(year = 2022, dataset = "ResponsavelRenda")
 ```
 
 ```{r}
 tracts_basic <- tracts_basic |> select(code_tract, V0001)
 tracts_people <- tracts_people |> select(code_tract, raca_V01318, raca_V01320, raca_V01321)
+tracts_income <- tracts_income |> select(code_tract, V06004)
 
 census_tracts <- census_tracts |>
     left_join(tracts_basic, by = "code_tract", copy=TRUE) |>
     left_join(tracts_people, by = "code_tract", copy=TRUE) |>
+    left_join(tracts_income, by = "code_tract", copy=TRUE) |>
     mutate(
-        pct_black = raca_V01318 / V0001,
-        pct_brown = raca_V01320 / V0001,
-        pct_indigenous = raca_V01321 / V0001
+        black_brown_population = raca_V01318 + raca_V01320,
+        pct_black_brown = black_brown_population / V0001,
+        pct_indigenous = raca_V01321 / V0001,
+        mean_household_income = V06004
     ) |>
-    select(-raca_V01318, -raca_V01320, -raca_V01321)
+    select(-raca_V01318, -raca_V01320, -raca_V01321, -black_brown_population, -V06004)
 ```
 
 ```{r}

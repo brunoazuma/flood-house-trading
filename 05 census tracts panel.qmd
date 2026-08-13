@@ -24,6 +24,9 @@ census_tracts <- sfarrow::st_read_parquet("data/census/census_tracts.parquet")
 # census_tracts$geometry <- st_as_sfc(census_tracts$geom)
 # st_geometry(census_tracts) <- "geometry"
 flood_events <- st_read("data/occurrence/flood_events.gpkg")
+parks <- st_read("data/amenities/GEOSAMPA_cadparcs_parque_unidade_conservacao.gpkg")
+water <- st_read("data/amenities/geoportal_massa_d_agua.gpkg ")
+adm_districts <- st_read("data/amenities/geoportal_distrito_municipal_v2.gpkg")
 ```
 
 Let's confirm that all datasets are using the same coordinate reference system (CRS). If they are not, we will need to transform one of them to match the others.
@@ -32,9 +35,12 @@ Let's confirm that all datasets are using the same coordinate reference system (
 st_crs(itbi_data)
 st_crs(census_tracts)
 st_crs(flood_events)
+st_crs(parks)
+st_crs(water)
+st_crs(adm_districts)
 ```
 
-The itbi_data is in EPSG:4674, while the flood_events is in EPSG:31983. We will transform the itbi_data to match the flood_events CRS.
+The itbi_data and census data are in EPSG:4674, while the flood_events is in EPSG:31983. We will transform the itbi_data to match the flood_events CRS.
 
 ```{r}
 itbi_data <- st_transform(itbi_data, crs = st_crs(flood_events))
@@ -116,9 +122,9 @@ Now, we will calculate the distance from each census tract to the nearest flood 
 ```{r}
 census_tracts <- census_tracts |>
     # First, enconter the nearest flood event for each house
-    mutate(nearest_flood_event_index = st_nearest_feature(geom, flood_events)) |>
+    mutate(nearest_flood_event_index = st_nearest_feature(geometry, flood_events)) |>
     # Then, calculate the distance to the nearest flood event
-    mutate(distance_to_nearest_flood_event = st_distance(geom, flood_events[nearest_flood_event_index, ], by_element = TRUE))
+    mutate(distance_to_nearest_flood_event = st_distance(geometry, flood_events[nearest_flood_event_index, ], by_element = TRUE))
     # Lastly, delete the nearest_flood_event column, as we don't need it anymore
     # select(-nearest_flood_event_index)
 ```
@@ -137,7 +143,7 @@ final_database <- expand_grid(
     year = panel_years$year,
     month = seq(1, 12)
 ) |>
-    left_join(census_tracts, by = c("census_tract" = "code_tract")) |>
+    left_join(census_tracts |> select(-year), by = c("census_tract" = "code_tract")) |>
     st_as_sf()
 ```
 
@@ -191,6 +197,60 @@ final_database <- final_database |>
             group_by(census_tract, year, month) |>
             summarise(flood_events = n(), .groups = "drop"),
         by = c("census_tract", "year", "month"))
+```
+
+# Adding covariates to the database
+
+## Amenities
+
+### Adding the distance to the nearest park
+
+```{r}
+census_tracts <- census_tracts |>
+    # First, enconter the nearest flood event for each house
+    mutate(nearest_park_index = st_nearest_feature(geometry, parks)) |>
+    # Then, calculate the distance to the nearest flood event
+    mutate(distance_to_nearest_park = st_distance(geometry, parks[nearest_park_index, ], by_element = TRUE))
+    # Lastly, delete the nearest_park column, as we don't need it anymore
+    # select(-nearest_park_index)
+```
+
+## Adding the distance to the nearest water body
+
+```{r}
+census_tracts <- census_tracts |>
+    # First, enconter the nearest flood event for each house
+    mutate(nearest_water_body_index = st_nearest_feature(geometry, water)) |>
+    # Then, calculate the distance to the nearest flood event
+    mutate(distance_to_nearest_water_body = st_distance(geometry, water[nearest_water_body_index, ], by_element = TRUE))
+    # Lastly, delete the nearest_water_body column, as we don't need it anymore
+    # select(-nearest_water_body_index)
+```
+
+## Adding the distance to the CBD
+
+```{r}
+# get the index of SE district in the adm_districts dataset
+cbd_idx <- adm_districts |>
+    mutate(row_idx = row_number()) |>
+    filter(nm_distrito_municipal == "SE") |>
+    pull(row_idx)
+
+census_tracts <- census_tracts |>
+    mutate(cbd_idx = cbd_idx) |>
+    mutate(ditance_to_cbd = st_distance(geometry, adm_districts[cbd_idx, ], by_element = TRUE)) |>
+    select(-cbd_idx)
+```
+
+## Adding the covariates to the final database
+
+```{r}
+final_database <- final_database |>
+    left_join(
+        census_tracts |>
+            st_drop_geometry() |>
+            select(code_tract, distance_to_nearest_park, distance_to_nearest_water_body, ditance_to_cbd),
+        by = c("census_tract" = "code_tract"))
 ```
 
 # Filtering the final database based on exposure to flood events

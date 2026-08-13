@@ -1,0 +1,21 @@
+---
+title: "Flood data Data"
+
+bibliography: 
+  - references.bib
+
+format:
+  html:
+    embed-resources: true
+---
+
+Some of the covariates to be used are based on geographical data about the amenities in the city of São Paulo. The data was collected from the São Paulo City Hall Digital Map Portal (https://geosampa.prefeitura.sp.gov.br/PaginasPublicas/_SBC.aspx). They are the following:
+
+* Direct distance to the nearest body of water in meters
+* Direct distance in meters to the closest park
+
+The data was downloaded in the geopackage.
+
+Also, we need to get data of employment data to calculate the number of jobs in each Administrative District. After obtaining the data for each the Administrative District (AD) level, I will select the AD with the highest number of jobs and define it as the Central Business District (CBD) to calculate the distance to the CBD for each census tract. The number of jobs in each AD was obtained from this report https://observatorios.dieese.org.br/ws2/tabela/3221. Although the Brás AD has the highest number of jobs in 2022, it doesn't seem reliable to use it as the CBD, as it is not the case in any other year in the series. Therefore, I will use the AD with the highest number of jobs in 2021, which is the Sé AD, as the CBD. In any case, the two ADs are contiguous, so the distance to the CBD will be similar for both ADs.
+
+The AD features were also downloaded from the São Paulo City Hall Digital Map Portal.

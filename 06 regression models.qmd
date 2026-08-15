@@ -18,6 +18,8 @@ library(sf)
 library(units)
 library(tmap)
 library(did)
+library(fixest)
+library(did2s)
 ```
 
 # Loading the database
@@ -36,7 +38,7 @@ As the staggered treatment adoption assumption, along with homogeneous treatment
 no_prior_floods_control <- data |>
     mutate(D = ave(has_flood_event, census_tract, FUN = max)) |>
     filter(
-        D == 1 | distance_to_nearest_flood_event > units::set_units(200, "m")
+        D == 1 | distance_to_nearest_flood_event > units::set_units(0, "m")
     )
 ```
 
@@ -63,11 +65,12 @@ no_prior_floods_control <- no_prior_floods_control |>
     
     
 no_prior_floods_control <- no_prior_floods_control |>
-    merge(
+    left_join(
         no_prior_floods_control |>
             sf::st_drop_geometry() |>
             group_by(census_tract) |>
-            summarise(G = max(t*D))
+            summarise(G = max(t*D)),
+        by = "census_tract"
     )
 
 no_prior_floods_control |>
@@ -83,9 +86,20 @@ The `did` package expects the data to have a single observation per unit per per
 
 ```{r}
 no_prior_floods_control <- no_prior_floods_control |>
-    group_by(census_tract, t, G, geom) |>
+    group_by(
+        census_tract,
+        t,
+        G,
+        geometry,
+        pct_black_brown,
+        pct_indigenous,
+        mean_household_income,
+        ditance_to_cbd,
+        distance_to_nearest_water_body,
+        distance_to_nearest_park
+    ) |>
     summarise(
-        transactions = sum(transactions)
+        transactions = sum(transactions),
     ) |>
     ungroup()
 ```
@@ -274,3 +288,223 @@ So, by examining the variables used in the papers above, I will use the followin
 The variables selected above are also adapted to the São Paulo context, as the variables related to the rivers are adapted to the Pinheiros and Tietê rivers, which are the main rivers in São Paulo, and the demographic variables are adapted to the Brazilian context.
 
 Some of the variables above are available in the census data, while others are calculated from geospatial provided by the São Paulo City Hall digital map, named GeoSampa.
+
+## Running the CS2021 DID with multiple periods and covariates
+
+First I need to remove the census tracts that have missing values for any of the covariates and also check for support on each covariate,
+
+```{r}
+# Getting each census tract's covariates from data
+missin_cov <- no_prior_floods_control |>
+    sf::st_drop_geometry() |>
+    group_by(census_tract) |>
+    summarise(
+        pct_black_brown = first(pct_black_brown),
+        pct_indigenous = first(pct_indigenous),
+        mean_household_income = first(mean_household_income),
+        distance_to_cbd = first(ditance_to_cbd),
+        distance_to_nearest_water_body = first(distance_to_nearest_water_body),
+        distance_to_nearest_park = first(distance_to_nearest_park)
+    ) |>
+    filter(
+        is.na(pct_black_brown) |
+            is.na(pct_indigenous) |
+            is.na(mean_household_income) |
+            is.na(distance_to_cbd) |
+            is.na(distance_to_nearest_water_body) |
+            is.na(distance_to_nearest_park)
+    ) |>
+    pull(census_tract)
+
+glimpse(missin_cov)
+```
+
+```{r}
+library(modelsummary)
+
+df_tab <- no_prior_floods_control |>
+    filter(!census_tract %in% missin_cov) |>
+    sf::st_drop_geometry() |>
+    group_by(census_tract) |>
+    summarise(
+        pct_black_brown = first(pct_black_brown),
+        pct_indigenous = first(pct_indigenous),
+        mean_household_income = first(mean_household_income),
+        distance_to_cbd = first(ditance_to_cbd) |> units::set_units("m") |> units::drop_units(),
+        distance_to_nearest_water_body = first(distance_to_nearest_water_body) |> units::set_units("m") |> units::drop_units(),
+        distance_to_nearest_park = first(distance_to_nearest_park) |> units::set_units("m") |> units::drop_units(),
+        G = first(G),
+        D = G > 0
+    ) |>
+    select(-G)
+
+modelsummary::datasummary_balance(
+    ~D,
+    data=df_tab,
+    dinm_statistic = "p.value"
+)
+```
+
+```{r}
+attgt <- did::att_gt(
+    yname = "transactions",
+    tname = "t",
+    idname = "census_tract",
+    gname = "G",
+    xformla = ~ pct_black_brown + pct_indigenous + mean_household_income + ditance_to_cbd + distance_to_nearest_water_body + distance_to_nearest_park,
+    clustervars = "census_tract",
+    data = no_prior_floods_control |> filter(!census_tract %in% missin_cov)
+)
+
+summary(attgt)
+```
+
+```{r}
+ggdid(attgt)
+```
+
+```{r}
+agg.simple <- aggte(attgt, type = "simple", na.rm = TRUE)
+summary(agg.simple)
+```
+
+```{r}
+agg.gs <- aggte(attgt, type = "group", na.rm = TRUE)
+summary(agg.gs)
+```
+
+```{r}
+ggdid(agg.gs)
+```
+
+```{r}
+agg.es <- did::aggte(attgt, type = "dynamic", na.rm = TRUE)
+
+summary(agg.es)
+```
+
+```{r}
+ggdid(agg.es)
+```
+
+# Running the Butts (2021) rings DID with multiple periods
+
+As pointed out by @butts2021spill, there can be a bias in the CS2021 DID when there are spillover effects, which is a plausible scenario in the case of flooding events. Therefore, I will run the @butts2021spill rings DID with multiple periods, which is robust to spillover effects. The rings DID requires the definition of a treatment radius, which is the distance from the treated unit within which the control units are considered to be affected by the treatment. In this case, I will use a treatment radius of 1 km, but I will also run the model with other treatment radii to check the robustness of the results.
+
+First, I will create the series of `Ring_ijt` variables, which indicate whether the unit is within the treatment radius of a treated unit in a given period. The `Ring_ijt` variables will be created for each treatment radius, and will be set to 1 if the unit is within the treatment radius of a treated unit in a given period, and 0 otherwise.
+
+```{r}
+df_spill <- no_prior_floods_control |>
+  mutate(
+    # Create D_it
+    treat = as.numeric((G <= t) & (G != 0))
+ )
+```
+
+```{r}
+s = Sys.time()
+s
+```
+
+```{r}
+df_spill <- df_spill |>
+  group_by(t) |>
+  mutate(
+    nearest_treated_dist = {
+      treated_geom <- geometry[treat == 1]
+
+      if (length(treated_geom) == 0L) {
+        units::set_units(rep(NA_real_, n()), "m")
+      } else {
+        dmat_m <- st_distance(geometry, treated_geom) |>
+          units::set_units("m") |>
+          units::drop_units()
+
+        units::set_units(apply(dmat_m, 1, min), "m")
+      }
+    },
+    nearest_treated_dist_m = units::drop_units(nearest_treated_dist)
+  ) |>
+  ungroup()
+```
+
+```{r}
+df_spill <- df_spill |>
+  mutate(
+    within_50 = !is.na(nearest_treated_dist_m) & nearest_treated_dist_m > 0 & nearest_treated_dist_m <= 50,
+    within_50 = as.numeric(within_50),
+    within_100 = !is.na(nearest_treated_dist_m) & nearest_treated_dist_m > 50 & nearest_treated_dist_m <= 100,
+    within_100 = as.numeric(within_100),
+    within_200 = !is.na(nearest_treated_dist_m) & nearest_treated_dist_m > 100 & nearest_treated_dist_m <= 200,
+    within_200 = as.numeric(within_200),
+    within_400 = !is.na(nearest_treated_dist_m) & nearest_treated_dist_m > 200 & nearest_treated_dist_m <= 400,
+    within_400 = as.numeric(within_400),
+    within_1000 = !is.na(nearest_treated_dist_m) & nearest_treated_dist_m > 400 & nearest_treated_dist_m <= 1000,
+    within_1000 = as.numeric(within_1000),
+    spill = !is.na(nearest_treated_dist_m) & nearest_treated_dist_m > 0 & nearest_treated_dist_m <= 1000,
+    spill = as.numeric(spill)
+  )
+```
+
+```{r}
+e = Sys.time()
+e
+```
+
+```{r}
+print("Time taken to calculate the nearest treated distance and create the Ring_ijt variables:")
+e-s
+```
+
+```{r}
+df_spill <- df_spill |>
+    mutate(rel_t = ifelse(G == 0, -1, t - G)) |>
+    group_by(census_tract) |>
+    mutate(
+        t_within_50 = ifelse(any(within_50 == 1), min(t[within_50 == 1]), 0),
+        rel_t_within_50 = ifelse(t_within_50 > 0 & treat != 1, t - t_within_50, -1),
+        t_within_100 = ifelse(any(within_100 == 1), min(t[within_100 == 1]), 0),
+        rel_t_within_100 = ifelse(t_within_100 > 0 & treat != 1, t - t_within_100, -1),
+        t_within_200 = ifelse(any(within_200 == 1), min(t[within_200 == 1]), 0),
+        rel_t_within_200 = ifelse(t_within_200 > 0 & treat != 1, t - t_within_200, -1),
+        t_within_400 = ifelse(any(within_400 == 1), min(t[within_400 == 1]), 0),
+        rel_t_within_400 = ifelse(t_within_400 > 0 & treat != 1, t - t_within_400, -1),
+        t_within_1000 = ifelse(any(within_1000 == 1), min(t[within_1000 == 1]), 0),
+        rel_t_within_1000 = ifelse(t_within_1000 > 0 & treat != 1, t - t_within_1000, -1),
+        t_spill = ifelse(any(spill == 1), min(t[spill == 1]), 0),
+        rel_t_spill = ifelse(t_spill > 0 & treat != 1, t - t_spill, -1),
+        treat_or_spill = treat + within_50 + within_100 + within_200 + within_400 + within_1000
+    ) |>
+    ungroup()
+```
+
+```{r}
+es_multi_ring <- did2s(
+    data = df_spill |>
+           sf::st_drop_geometry() |>
+           filter(!census_tract %in% missin_cov) |>
+           mutate(
+                ditance_to_cbd = units::drop_units(ditance_to_cbd),
+                distance_to_nearest_water_body = units::drop_units(distance_to_nearest_water_body),
+                distance_to_nearest_park = units::drop_units(distance_to_nearest_park)
+           ),
+    yname = "transactions",
+    # first_stage = ~ i(t, pct_black_brown) + i(t, pct_indigenous) + i(t, mean_household_income) +  i(t, ditance_to_cbd) + i(t, distance_to_nearest_water_body) + i(t, distance_to_nearest_park) |  census_tract + t,
+    first_stage = ~ 0 | census_tract + t,
+    # second_stage = ~ i(rel_t) + i(rel_t_within_50) + i(rel_t_within_100),
+    # second_stage = ~ i(rel_t, ref=-1) + i(rel_t_within_50, ref=-1) + i(rel_t_within_100, ref=-1) + i(rel_t_within_200, ref=-1) + i(rel_t_within_400, ref=-1),
+    # second_stage = ~ i(rel_t, ref=-1) + i(rel_t_within_50, ref=-1) + i(rel_t_within_100, ref=-1) + i(rel_t_within_200, ref=-1) + i(rel_t_within_400, ref=-1) + i(rel_t_within_1000, ref=-1),
+    second_stage = ~ i(rel_t, ref = -1) + i(rel_t_spill, ref=-1),
+    treatment = "treat_or_spill",
+    cluster_var = "census_tract"
+)
+```
+
+```{r}
+iplot(es_multi_ring)
+```
+
+
+```{r}
+summary(es_multi_ring)
+```

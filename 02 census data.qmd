@@ -47,7 +47,7 @@ tracts_income <- censobr::read_tracts(year = 2022, dataset = "ResponsavelRenda")
 ```
 
 ```{r}
-tracts_basic <- tracts_basic |> select(code_tract, V0001)
+tracts_basic <- tracts_basic |> select(code_tract, V0001, V0002)
 tracts_people <- tracts_people |> select(code_tract, raca_V01318, raca_V01320, raca_V01321)
 tracts_income <- tracts_income |> select(code_tract, V06004)
 
@@ -56,12 +56,14 @@ census_tracts <- census_tracts |>
     left_join(tracts_people, by = "code_tract", copy=TRUE) |>
     left_join(tracts_income, by = "code_tract", copy=TRUE) |>
     mutate(
+        total_residences = V0002,
+        total_population = V0001,
         black_brown_population = raca_V01318 + raca_V01320,
         pct_black_brown = black_brown_population / V0001,
         pct_indigenous = raca_V01321 / V0001,
         mean_household_income = V06004
     ) |>
-    select(-raca_V01318, -raca_V01320, -raca_V01321, -black_brown_population, -V06004)
+    select(-V0001, -V0002, -raca_V01318, -raca_V01320, -raca_V01321, -black_brown_population, -V06004)
 ```
 
 ```{r}

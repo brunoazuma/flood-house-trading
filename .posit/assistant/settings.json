@@ -1,0 +1,13 @@
+{
+  "permission": {
+    "executeCode": {
+      "*": "allow"
+    },
+    "edit": {
+      "*.qmd": "allow"
+    }
+  },
+  "sandbox": {
+    "enabled": false
+  }
+}

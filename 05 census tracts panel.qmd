@@ -256,10 +256,10 @@ final_database <- final_database |>
 # Filtering the final database based on exposure to flood events
 
 ```{r}
-final_database_filtered <- final_database |>
-    filter(distance_to_nearest_flood_event <= units::set_units(400, "m")) |>
+final_database <- final_database |>
     mutate(flood_events = replace_na(flood_events, 0),
            transactions = replace_na(transactions, 0),
+           transaction_pct = transactions / total_residences,
            has_flood_event = if_else(flood_events > 0, 1L, 0L))
 ```
 
@@ -269,8 +269,8 @@ First, let's visualize the census tracts categorized by the inclusion criteria o
 ```{r}
 library(tmap)
 
-included_tracts <- final_database_filtered |> pull(census_tract) |> unique()
-treated_tracts <- final_database_filtered |> filter(has_flood_event == 1) |> pull(census_tract) |> unique()
+included_tracts <- final_database |> pull(census_tract) |> unique()
+treated_tracts <- final_database |> filter(has_flood_event == 1) |> pull(census_tract) |> unique()
 
 map_tracts <- census_tracts |>
     mutate(
@@ -301,7 +301,7 @@ tmap::tm_shape(map_tracts) +
 # Checking the transaction support through the tracts and periods
 
 ```{r}
-final_database_filtered |>
+final_database |>
     st_drop_geometry() |>
     group_by(year, month) |>
     summarise(transactions = sum(transactions)) |>
@@ -310,7 +310,7 @@ final_database_filtered |>
 ```
 
 ```{r}
-final_database_filtered |>
+final_database |>
     st_drop_geometry() |>
     group_by(census_tract) |>
     summarise(transactions = sum(transactions)) |>
@@ -319,7 +319,7 @@ final_database_filtered |>
 ```
 
 ```{r}
-final_database_filtered |>
+final_database |>
     st_drop_geometry() |>
     ggplot(aes(x = transactions)) +
     geom_histogram(binwidth = 1, fill = "lightblue", color = "black") +
@@ -332,7 +332,7 @@ Several census tracts have no transactions at all. This is not a problem with th
 # Checking treatment support through all periods
 
 ```{r}
-final_database_filtered |>
+final_database |>
     st_drop_geometry() |>
     group_by(year, month) |>
     summarise(has_treatment = n_distinct(has_flood_event)>1) |>
@@ -343,7 +343,7 @@ final_database_filtered |>
 # Checking the balance between treated and control groups
 
 ```{r}
-final_database_filtered |>
+final_database |>
     st_drop_geometry() |>
     group_by(has_flood_event) |>
     # count distinct census tracts
@@ -360,14 +360,14 @@ Although the number of treated census tracts is much smaller than the number of 
 ```{r}
 data_dir <- "data"
 dir.create(data_dir, showWarnings = FALSE)
-final_database_filtered_dir <- file.path(data_dir, "final_database")
-dir.create(final_database_filtered_dir, showWarnings = FALSE)
+final_database_dir <- file.path(data_dir, "final_database")
+dir.create(final_database_dir, showWarnings = FALSE)
 ```
 
 ```{r}
 # As the parquet writer doesn't save geographical metadata, we need to project the data in OGC:CRS84, as specified in https://github.com/opengeospatial/geoparquet/blob/main/format-specs/compatible-parquet.md
-final_database_filtered <- st_transform(final_database_filtered, crs = "OGC:CRS84")
+final_database <- st_transform(final_database, crs = "OGC:CRS84")
 
 # Save the combined geocoded data to a geoparquet file for later use
-sfarrow::st_write_parquet(final_database_filtered, file.path(final_database_filtered_dir, "census_transactions_flooding.parquet"))
+sfarrow::st_write_parquet(final_database, file.path(final_database_dir, "census_transactions_flooding.parquet"))
 ```

@@ -20,6 +20,8 @@ library(tmap)
 library(did)
 library(fixest)
 library(did2s)
+library(modelsummary)
+library(ggfixest)
 ```
 
 # Loading the database
@@ -84,13 +86,18 @@ no_prior_floods_control |>
 
 The `did` package expects the data to have a single observation per unit per period. Therefore, I need to aggregate the data by quarter, summing the number of transactions in each quarter for each unit.
 
+To make sure the data is aggregated correctly, I will also keep the number of observations before the aggregation, and check the number of observations after the aggregation.
+
 ```{r}
+n_obs_before_aggregation <- no_prior_floods_control |> sf::st_drop_geometry() |> count() |> pull(n)
+
 no_prior_floods_control <- no_prior_floods_control |>
     group_by(
         census_tract,
         t,
         G,
         geometry,
+        total_residences,
         pct_black_brown,
         pct_indigenous,
         mean_household_income,
@@ -101,7 +108,17 @@ no_prior_floods_control <- no_prior_floods_control |>
     summarise(
         transactions = sum(transactions),
     ) |>
+    mutate(
+        transaction_pct = transactions / total_residences
+    ) |>
     ungroup()
+```
+
+To make sure the data is aggregated correctly, let's check the number of observations compared to the original data.
+
+```{r}
+n_obs_before_aggregation /
+    no_prior_floods_control |> sf::st_drop_geometry() |> count() |> pull(n)
 ```
 
 ## Dropping the first quarters for the pre-treatment trends
@@ -127,15 +144,18 @@ missing_tracts |>
     DT::datatable()
 ```
 
+No census tracts are missing observations for any quarter, so the data is balanced.
+
 ## Running the CS2021 DID with multiple periods
 
 ```{r}
 attgt <- did::att_gt(
-    yname = "transactions",
+    yname = "transaction_pct",
     tname = "t",
     idname = "census_tract",
     gname = "G",
     xformla = ~ 1,
+    weightsname = "total_residences",
     clustervars = "census_tract",
     data = no_prior_floods_control
 )
@@ -320,13 +340,14 @@ glimpse(missin_cov)
 ```
 
 ```{r}
-library(modelsummary)
-
 df_tab <- no_prior_floods_control |>
     filter(!census_tract %in% missin_cov) |>
     sf::st_drop_geometry() |>
     group_by(census_tract) |>
     summarise(
+        total_residences = first(total_residences),
+        transactions = sum(transactions),
+        transaction_pct = transactions / total_residences,
         pct_black_brown = first(pct_black_brown),
         pct_indigenous = first(pct_indigenous),
         mean_household_income = first(mean_household_income),
@@ -347,11 +368,12 @@ modelsummary::datasummary_balance(
 
 ```{r}
 attgt <- did::att_gt(
-    yname = "transactions",
+    yname = "transaction_pct",
     tname = "t",
     idname = "census_tract",
     gname = "G",
     xformla = ~ pct_black_brown + pct_indigenous + mean_household_income + ditance_to_cbd + distance_to_nearest_water_body + distance_to_nearest_park,
+    weightsname = "total_residences",
     clustervars = "census_tract",
     data = no_prior_floods_control |> filter(!census_tract %in% missin_cov)
 )
@@ -401,6 +423,8 @@ df_spill <- no_prior_floods_control |>
  )
 ```
 
+## Calculating the nearest treated distance and creating the `Ring_ijt` variables
+
 ```{r}
 s = Sys.time()
 s
@@ -439,9 +463,9 @@ df_spill <- df_spill |>
     within_200 = as.numeric(within_200),
     within_400 = !is.na(nearest_treated_dist_m) & nearest_treated_dist_m > 200 & nearest_treated_dist_m <= 400,
     within_400 = as.numeric(within_400),
-    within_1000 = !is.na(nearest_treated_dist_m) & nearest_treated_dist_m > 400 & nearest_treated_dist_m <= 1000,
-    within_1000 = as.numeric(within_1000),
-    spill = !is.na(nearest_treated_dist_m) & nearest_treated_dist_m > 0 & nearest_treated_dist_m <= 1000,
+    # within_1000 = !is.na(nearest_treated_dist_m) & nearest_treated_dist_m > 400 & nearest_treated_dist_m <= 1000,
+    # within_1000 = as.numeric(within_1000),
+    spill = !is.na(nearest_treated_dist_m) & nearest_treated_dist_m > 0 & nearest_treated_dist_m <= 400,
     spill = as.numeric(spill)
   )
 ```
@@ -469,14 +493,14 @@ df_spill <- df_spill |>
         rel_t_within_200 = ifelse(t_within_200 > 0 & treat != 1, t - t_within_200, -1),
         t_within_400 = ifelse(any(within_400 == 1), min(t[within_400 == 1]), 0),
         rel_t_within_400 = ifelse(t_within_400 > 0 & treat != 1, t - t_within_400, -1),
-        t_within_1000 = ifelse(any(within_1000 == 1), min(t[within_1000 == 1]), 0),
-        rel_t_within_1000 = ifelse(t_within_1000 > 0 & treat != 1, t - t_within_1000, -1),
         t_spill = ifelse(any(spill == 1), min(t[spill == 1]), 0),
         rel_t_spill = ifelse(t_spill > 0 & treat != 1, t - t_spill, -1),
-        treat_or_spill = treat + within_50 + within_100 + within_200 + within_400 + within_1000
+        treat_or_spill = treat + within_50 + within_100 + within_200 + within_400
     ) |>
     ungroup()
 ```
+
+## Running the rings DID with multiple periods without covariates
 
 ```{r}
 es_multi_ring <- did2s(
@@ -488,23 +512,45 @@ es_multi_ring <- did2s(
                 distance_to_nearest_water_body = units::drop_units(distance_to_nearest_water_body),
                 distance_to_nearest_park = units::drop_units(distance_to_nearest_park)
            ),
-    yname = "transactions",
-    # first_stage = ~ i(t, pct_black_brown) + i(t, pct_indigenous) + i(t, mean_household_income) +  i(t, ditance_to_cbd) + i(t, distance_to_nearest_water_body) + i(t, distance_to_nearest_park) |  census_tract + t,
-    first_stage = ~ 0 | census_tract + t,
-    # second_stage = ~ i(rel_t) + i(rel_t_within_50) + i(rel_t_within_100),
-    # second_stage = ~ i(rel_t, ref=-1) + i(rel_t_within_50, ref=-1) + i(rel_t_within_100, ref=-1) + i(rel_t_within_200, ref=-1) + i(rel_t_within_400, ref=-1),
-    # second_stage = ~ i(rel_t, ref=-1) + i(rel_t_within_50, ref=-1) + i(rel_t_within_100, ref=-1) + i(rel_t_within_200, ref=-1) + i(rel_t_within_400, ref=-1) + i(rel_t_within_1000, ref=-1),
-    second_stage = ~ i(rel_t, ref = -1) + i(rel_t_spill, ref=-1),
+    yname = "transaction_pct",
+    first_stage = ~ 1 | census_tract + t,
+    second_stage = ~ i(rel_t, ref=-1) + i(rel_t_within_50, ref=-1) + i(rel_t_within_100, ref=-1) + i(rel_t_within_200, ref=-1) + i(rel_t_within_400, ref=-1),
     treatment = "treat_or_spill",
+    weights = "total_residences",
     cluster_var = "census_tract"
 )
 ```
 
 ```{r}
-iplot(es_multi_ring)
+ggiplot(es_multi_ring)
 ```
 
 
 ```{r}
 summary(es_multi_ring)
+```
+
+## Running the rings DID with multiple periods with covariates
+
+```{r}
+es_multi_ring_cov <- did2s(
+    data = df_spill |>
+           sf::st_drop_geometry() |>
+           filter(!census_tract %in% missin_cov) |>
+           mutate(
+                ditance_to_cbd = units::drop_units(ditance_to_cbd),
+                distance_to_nearest_water_body = units::drop_units(distance_to_nearest_water_body),
+                distance_to_nearest_park = units::drop_units(distance_to_nearest_park)
+           ),
+    yname = "transaction_pct",
+    first_stage = ~ i(t, pct_black_brown) + i(t, pct_indigenous) + i(t, mean_household_income) +  i(t, ditance_to_cbd) + i(t, distance_to_nearest_water_body) + i(t, distance_to_nearest_park) |  census_tract + t,
+    second_stage = ~ i(rel_t, ref=-1) + i(rel_t_within_50, ref=-1) + i(rel_t_within_100, ref=-1) + i(rel_t_within_200, ref=-1) + i(rel_t_within_400, ref=-1),
+    treatment = "treat_or_spill",
+    weights = "total_residences",
+    cluster_var = "census_tract"
+)
+```
+
+```{r}
+ggiplot(es_multi_ring_cov)
 ```

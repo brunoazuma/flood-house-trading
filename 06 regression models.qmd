@@ -22,6 +22,7 @@ library(fixest)
 library(did2s)
 library(modelsummary)
 library(ggfixest)
+library(HonestDiD)
 ```
 
 # Loading the database
@@ -34,7 +35,7 @@ data <- sfarrow::st_read_parquet("data/final_database/census_transactions_floodi
 
 ## Selecting the control group
 
-As the staggered treatment adoption assumption, along with homogeneous treatment effects, implies that "the unids do not 'forget' about their treatment experience", we will keep as control group only the units that have not been treated in any period. Specifically, we will keep as control group only the tracts that have no prior flood events since the beginning of the sample period (2013). First, let's see the number of untreated tracts after this filtering before we dive in any further details.
+As the staggered treatment adoption assumption, along with homogeneous treatment effects, implies that "the units do not 'forget' about their treatment experience", we will keep as control group only the units that have not been treated in any period. Specifically, we will keep as control group only the tracts that have no prior flood events since the beginning of the sample period (2013). First, let's see the number of untreated tracts after this filtering before we dive in any further details.
 
 ```{r}
 no_prior_floods_control <- data |>
@@ -53,6 +54,15 @@ no_prior_floods_control |>
 ```
 
 There are more than 20,000 tracts in the control group still, which will allow for further stratification of the control group in the future. For now, we will keep the control group as is and run the CS2021 did with multiple periods.
+
+## Selecting only tracts with residences
+
+As the outcome variable is the number of transactions of houses and apartments in the census tract, keeping tracts with no residences (like tracts of public parks, industrial areas, etc.) would probably lead to an attenuation bias in the estimation of the treatment effect, as the number of transactions in these tracts is expected to be zero regardless of the treatment. Therefore, I will keep only the tracts with at least one residence.
+
+```{r}
+no_prior_floods_control <- no_prior_floods_control |>
+    filter(total_residences > 0)
+```
 
 ## Creating the `G`, `D` and `t` variables
 
@@ -127,7 +137,7 @@ Lastly, I will drop the first three quarters of the sample, so that there are so
 
 ```{r}
 no_prior_floods_control <- no_prior_floods_control |>
-    filter(G > 3 | G == 0)
+    filter(G > 1 | G == 0)
 ```
 
 ## Checking for unbalanced groups
@@ -149,7 +159,7 @@ No census tracts are missing observations for any quarter, so the data is balanc
 ## Running the CS2021 DID with multiple periods
 
 ```{r}
-attgt <- did::att_gt(
+att.gt <- did::att_gt(
     yname = "transaction_pct",
     tname = "t",
     idname = "census_tract",
@@ -157,23 +167,24 @@ attgt <- did::att_gt(
     xformla = ~ 1,
     weightsname = "total_residences",
     clustervars = "census_tract",
+    base_period = "universal",
     data = no_prior_floods_control
 )
 
-summary(attgt)
+summary(att.gt)
 ```
 
 ```{r}
-ggdid(attgt)
+ggdid(att.gt)
 ```
 
 ```{r}
-agg.simple <- aggte(attgt, type = "simple")
+agg.simple <- aggte(att.gt, type = "simple")
 summary(agg.simple)
 ```
 
 ```{r}
-agg.gs <- aggte(attgt, type = "group")
+agg.gs <- aggte(att.gt, type = "group")
 summary(agg.gs)
 ```
 
@@ -182,7 +193,7 @@ ggdid(agg.gs)
 ```
 
 ```{r}
-agg.es <- did::aggte(attgt, type = "dynamic")
+agg.es <- did::aggte(att.gt, type = "dynamic")
 
 summary(agg.es)
 ```
@@ -367,7 +378,7 @@ modelsummary::datasummary_balance(
 ```
 
 ```{r}
-attgt <- did::att_gt(
+att.gt.cov <- did::att_gt(
     yname = "transaction_pct",
     tname = "t",
     idname = "census_tract",
@@ -375,24 +386,25 @@ attgt <- did::att_gt(
     xformla = ~ pct_black_brown + pct_indigenous + mean_household_income + ditance_to_cbd + distance_to_nearest_water_body + distance_to_nearest_park,
     weightsname = "total_residences",
     clustervars = "census_tract",
+    base_period = "universal",
     data = no_prior_floods_control |> filter(!census_tract %in% missin_cov)
 )
 
-summary(attgt)
+summary(att.gt.cov)
 ```
 
 ```{r}
-ggdid(attgt)
+ggdid(att.gt.cov)
 ```
 
 ```{r}
-agg.simple <- aggte(attgt, type = "simple", na.rm = TRUE)
-summary(agg.simple)
+agg.simple.cov <- aggte(att.gt.cov, type = "simple", na.rm = TRUE)
+summary(agg.simple.cov)
 ```
 
 ```{r}
-agg.gs <- aggte(attgt, type = "group", na.rm = TRUE)
-summary(agg.gs)
+agg.gs.cov <- aggte(att.gt.cov, type = "group", na.rm = TRUE)
+summary(agg.gs.cov)
 ```
 
 ```{r}
@@ -400,9 +412,9 @@ ggdid(agg.gs)
 ```
 
 ```{r}
-agg.es <- did::aggte(attgt, type = "dynamic", na.rm = TRUE)
+agg.es.cov <- did::aggte(att.gt.cov, type = "dynamic", na.rm = TRUE)
 
-summary(agg.es)
+summary(agg.es.cov)
 ```
 
 ```{r}
@@ -482,19 +494,19 @@ e-s
 
 ```{r}
 df_spill <- df_spill |>
-    mutate(rel_t = ifelse(G == 0, -1, t - G)) |>
+    mutate(rel_t = ifelse(G == 0, -Inf, t - G)) |>
     group_by(census_tract) |>
     mutate(
         t_within_50 = ifelse(any(within_50 == 1), min(t[within_50 == 1]), 0),
-        rel_t_within_50 = ifelse(t_within_50 > 0 & treat != 1, t - t_within_50, -1),
+        rel_t_within_50 = ifelse(t_within_50 > 0 & treat != 1, t - t_within_50, -Inf),
         t_within_100 = ifelse(any(within_100 == 1), min(t[within_100 == 1]), 0),
-        rel_t_within_100 = ifelse(t_within_100 > 0 & treat != 1, t - t_within_100, -1),
+        rel_t_within_100 = ifelse(t_within_100 > 0 & treat != 1, t - t_within_100, -Inf),
         t_within_200 = ifelse(any(within_200 == 1), min(t[within_200 == 1]), 0),
-        rel_t_within_200 = ifelse(t_within_200 > 0 & treat != 1, t - t_within_200, -1),
+        rel_t_within_200 = ifelse(t_within_200 > 0 & treat != 1, t - t_within_200, -Inf),
         t_within_400 = ifelse(any(within_400 == 1), min(t[within_400 == 1]), 0),
-        rel_t_within_400 = ifelse(t_within_400 > 0 & treat != 1, t - t_within_400, -1),
+        rel_t_within_400 = ifelse(t_within_400 > 0 & treat != 1, t - t_within_400, -Inf),
         t_spill = ifelse(any(spill == 1), min(t[spill == 1]), 0),
-        rel_t_spill = ifelse(t_spill > 0 & treat != 1, t - t_spill, -1),
+        rel_t_spill = ifelse(t_spill > 0 & treat != 1, t - t_spill, -Inf),
         treat_or_spill = treat + within_50 + within_100 + within_200 + within_400
     ) |>
     ungroup()
@@ -554,3 +566,249 @@ es_multi_ring_cov <- did2s(
 ```{r}
 ggiplot(es_multi_ring_cov)
 ```
+
+# Pre-trends tests
+
+Although the event plots above show, in general, that the pre-treatment trends are parallel, I'll apply some of the test recommended in @roth_whats_2023 present in the `HonestDiD` package.
+
+## CS2021
+
+The first step is to import the function Pedro Sant’Anna created for formatting did output for HonestDiD:
+
+```{r}
+#' @title honest_did
+#'
+#' @description a function to compute a sensitivity analysis
+#'  using the approach of Rambachan and Roth (2021)
+#'
+#' @param ... Parameters to pass to the relevant method.
+honest_did <- function(...) UseMethod("honest_did")
+
+#' @title honest_did.AGGTEobj
+#'
+#' @description a function to compute a sensitivity analysis
+#'  using the approach of Rambachan and Roth (2021) when
+#'  the event study is estimating using the `did` package
+#'
+#' @param es Result from aggte (object of class AGGTEobj).
+#' @param e event time to compute the sensitivity analysis for.
+#'  The default value is `e=0` corresponding to the "on impact"
+#'  effect of participating in the treatment.
+#' @param type Options are "smoothness" (which conducts a
+#'  sensitivity analysis allowing for violations of linear trends
+#'  in pre-treatment periods) or "relative_magnitude" (which
+#'  conducts a sensitivity analysis based on the relative magnitudes
+#'  of deviations from parallel trends in pre-treatment periods).
+#' @param gridPoints Number of grid points used for the underlying test
+#'  inversion. Default equals 100. User may wish to change the number of grid
+#'  points for computational reasons.
+#' @param ... Parameters to pass to `createSensitivityResults` or
+#'  `createSensitivityResults_relativeMagnitudes`.
+honest_did.AGGTEobj <- function(es,
+                                e          = 0,
+                                type       = c("smoothness", "relative_magnitude"),
+                                gridPoints = 100,
+                                ...) {
+
+  type <- match.arg(type)
+
+  # Make sure that user is passing in an event study
+  if (es$type != "dynamic") {
+    stop("need to pass in an event study")
+  }
+
+  # Check if used universal base period and warn otherwise
+  if (es$DIDparams$base_period != "universal") {
+    stop("Use a universal base period for honest_did")
+  }
+
+  # Recover influence function for event study estimates
+  es_inf_func <- es$inf.function$dynamic.inf.func.e
+
+  # Recover variance-covariance matrix
+  n <- nrow(es_inf_func)
+  V <- t(es_inf_func) %*% es_inf_func / n / n
+
+  # Check time vector is consecutive with referencePeriod = -1
+  referencePeriod <- -1
+  consecutivePre  <- !all(diff(es$egt[es$egt <= referencePeriod]) == 1)
+  consecutivePost <- !all(diff(es$egt[es$egt >= referencePeriod]) == 1)
+  if ( consecutivePre | consecutivePost ) {
+    msg <- "honest_did expects a time vector with consecutive time periods;"
+    msg <- paste(msg, "please re-code your event study and interpret the results accordingly.", sep="\n")
+    stop(msg)
+  }
+
+  # Remove the coefficient normalized to zero
+  hasReference <- any(es$egt == referencePeriod)
+  if ( hasReference ) {
+    referencePeriodIndex <- which(es$egt == referencePeriod)
+    V    <- V[-referencePeriodIndex,-referencePeriodIndex]
+    beta <- es$att.egt[-referencePeriodIndex]
+  } else {
+    beta <- es$att.egt
+  }
+
+  nperiods <- nrow(V)
+  npre     <- sum(1*(es$egt < referencePeriod))
+  npost    <- nperiods - npre
+  if ( !hasReference & (min(c(npost, npre)) <= 0) ) {
+    if ( npost <= 0 ) {
+      msg <- "not enough post-periods"
+    } else {
+      msg <- "not enough pre-periods"
+    }
+    msg <- paste0(msg, " (check your time vector; note honest_did takes -1 as the reference period)")
+    stop(msg)
+  }
+
+  baseVec1 <- basisVector(index=(e+1),size=npost)
+  orig_ci  <- constructOriginalCS(betahat        = beta,
+                                  sigma          = V,
+                                  numPrePeriods  = npre,
+                                  numPostPeriods = npost,
+                                  l_vec          = baseVec1)
+
+  if (type=="relative_magnitude") {
+    robust_ci <- createSensitivityResults_relativeMagnitudes(betahat        = beta,
+                                                             sigma          = V,
+                                                             numPrePeriods  = npre,
+                                                             numPostPeriods = npost,
+                                                             l_vec          = baseVec1,
+                                                             gridPoints     = gridPoints,
+                                                             ...)
+
+  } else if (type == "smoothness") {
+    robust_ci <- createSensitivityResults(betahat        = beta,
+                                          sigma          = V,
+                                          numPrePeriods  = npre,
+                                          numPostPeriods = npost,
+                                          l_vec          = baseVec1,
+                                          ...)
+  }
+
+  return(list(robust_ci=robust_ci, orig_ci=orig_ci, type=type))
+}
+```
+
+Then, we can run the sensitivity analysis for the CS2021 DID with multiple periods and covariates, using the `agg.es` object created above.
+
+```{r}
+sensivity.res.es <-
+  honest_did(agg.es,
+             e=0,
+             type="relative_magnitude")
+
+HonestDiD::createSensitivityPlot_relativeMagnitudes(sensivity.res.es$robust_ci,
+                                                    sensivity.res.es$orig_ci)
+```
+
+```{r}
+sensivity.res.es.cov <-
+  honest_did(agg.es.cov,
+             e=0,
+             type="relative_magnitude")
+
+HonestDiD::createSensitivityPlot_relativeMagnitudes(sensivity.res.es.cov$robust_ci,
+                                                    sensivity.res.es.cov$orig_ci)
+```
+
+## Butts (2021) rings DID
+
+The `did2s` package already has a function to run the sensitivity analysis for the rings DID with multiple periods, so we can use it directly.
+
+```{r}
+get_ring_sensitivity <- function(es, coef_name) {
+    # Keep only selected event-time terms and parse numeric event times robustly
+    beta_all <- stats::coef(es)
+    keep_coef <- grepl(paste0("^", coef_name, "::"), names(beta_all))
+
+    beta_sel <- beta_all[keep_coef]
+    event_time_sel <- as.numeric(sub(paste0("^", coef_name, "::(-?[0-9]+).*$"), "\\1", names(beta_sel)))
+
+    valid_sel <- !is.na(event_time_sel)
+    beta_sel <- beta_sel[valid_sel]
+    event_time_sel <- event_time_sel[valid_sel]
+
+    ord_sel <- order(event_time_sel)
+    beta_sel <- beta_sel[ord_sel]
+    event_time_sel <- event_time_sel[ord_sel]
+
+    V_sel <- as.matrix(stats::vcov(es)[names(beta_sel), names(beta_sel), drop = FALSE])
+
+    npre_sel <- sum(event_time_sel < 0)
+    npost_sel <- sum(event_time_sel >= 0)
+    baseVec1_sel <- HonestDiD::basisVector(index = 1, size = npost_sel)
+
+    list(
+        orig_ci = HonestDiD::constructOriginalCS(
+            betahat = beta_sel,
+            sigma = V_sel,
+            numPrePeriods = npre_sel,
+            numPostPeriods = npost_sel,
+            l_vec = baseVec1_sel
+        ),
+        robust_ci = HonestDiD::createSensitivityResults_relativeMagnitudes(
+            betahat = beta_sel,
+            sigma = V_sel,
+            numPrePeriods = npre_sel,
+            numPostPeriods = npost_sel,
+            l_vec = baseVec1_sel
+        )
+    )
+}
+```
+
+```{r}
+sensivity.res.es.ring <- get_ring_sensitivity(es_multi_ring, coef_name = "rel_t")
+
+HonestDiD::createSensitivityPlot_relativeMagnitudes(
+  sensivity.res.es.ring$robust_ci,
+  sensivity.res.es.ring$orig_ci
+)
+```
+
+```{r}
+sensivity.res.es.ring.cov <- get_ring_sensitivity(es_multi_ring_cov, coef_name = "rel_t")
+
+HonestDiD::createSensitivityPlot_relativeMagnitudes(
+  sensivity.res.es.ring.cov$robust_ci,
+  sensivity.res.es.ring.cov$orig_ci
+)
+```
+
+```{r}
+mean_transaction_pct <- no_prior_floods_control |>
+                            sf::st_drop_geometry() |>
+                            summarise(
+                                mean_transaction_pct = sum(transactions) / sum(total_residences)
+                            ) |>
+                            pull(mean_transaction_pct)
+mean_transaction_pct
+```
+
+```{r}
+sd_transaction_pct <- no_prior_floods_control |>
+                            sf::st_drop_geometry() |>
+                            mutate(
+                                trans_var = (transaction_pct - mean_transaction_pct)^2,
+                                trans_var = trans_var * total_residences
+                            ) |>
+                            summarise(
+                                sd_transaction_pct = sqrt(sum(trans_var) / sum(total_residences))
+                            ) |>
+                            pull(sd_transaction_pct)
+sd_transaction_pct
+```
+
+```{r}
+c(0.00046960, 0.00082355) / mean_transaction_pct
+```
+
+```{r}
+c(0.00046960, 0.00082355) / sd_transaction_pct
+```
+
+
+The sensitivity analysis based on the relative magnitudes of deviations from parallel trends in pre-treatment periods shows that the results are not robust to violations of the parallel trends assumption. In fact, the analysis of the event plots above do not shows almost any significant effect of flooding events on the number of transactions, with an exception of the butts 2021 rings model without covariates in some of the periods. Even so, these results are of very limited practical significance, as the point estimate of the effects range from -0.00046960 to -0.00082355, which means a reduction of 0.05% to 0.08% in the percentage of transactions in the census tracts, which is a very small effect -- respectively, 0.11 and 0.20 times of the mean or 0.02 and 0.04 times of the standard deviation of the transaction percentage.
+

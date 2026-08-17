@@ -812,3 +812,260 @@ c(0.00046960, 0.00082355) / sd_transaction_pct
 
 The sensitivity analysis based on the relative magnitudes of deviations from parallel trends in pre-treatment periods shows that the results are not robust to violations of the parallel trends assumption. In fact, the analysis of the event plots above do not shows almost any significant effect of flooding events on the number of transactions, with an exception of the butts 2021 rings model without covariates in some of the periods. Even so, these results are of very limited practical significance, as the point estimate of the effects range from -0.00046960 to -0.00082355, which means a reduction of 0.05% to 0.08% in the percentage of transactions in the census tracts, which is a very small effect -- respectively, 0.11 and 0.20 times of the mean or 0.02 and 0.04 times of the standard deviation of the transaction percentage.
 
+# Exporting the data for the replication package
+
+```{r}
+# As the parquet writer doesn't save geographical metadata, we need to project the data in OGC:CRS84, as specified in https://github.com/opengeospatial/geoparquet/blob/main/format-specs/compatible-parquet.md
+df_spill <- st_transform(df_spill, crs = "OGC:CRS84")
+
+df_spill_dir <- file.path("data", "spillover_did")
+if (!dir.exists(df_spill_dir)) {
+    dir.create(df_spill_dir, recursive = TRUE)
+}
+
+# Save the combined geocoded data to a geoparquet file for later use
+sfarrow::st_write_parquet(df_spill, file.path(df_spill_dir, "tracts_quarter_db.parquet"))
+```
+
+```{r}
+# Export the df_spill as an RDS file for later use
+saveRDS(df_spill, file.path(df_spill_dir, "tracts_quarter_db.rds"))
+```
+
+# Exporting the figures
+
+## Exporting the CS2021 DID with multiple periods
+
+```{r}
+es_cs_plot_data <- bind_rows(
+  tibble(
+    event_time = agg.es$egt,
+    estimate = agg.es$att.egt,
+    std_error = agg.es$se.egt,
+    critical_value = agg.es$crit.val.egt,
+    model = "Without covariates"
+  ),
+  tibble(
+    event_time = agg.es.cov$egt,
+    estimate = agg.es.cov$att.egt,
+    std_error = agg.es.cov$se.egt,
+    critical_value = agg.es.cov$crit.val.egt,
+    model = "With covariates"
+  )
+) |>
+  mutate(
+    conf.low = estimate - critical_value * std_error,
+    conf.high = estimate + critical_value * std_error,
+    model = factor(model, levels = c("Without covariates", "With covariates")),
+    event_time_plot = event_time + (as.integer(model) - 1.5) * 0.10
+  ) |>
+  bind_rows(
+    tibble(
+      event_time = -1,
+      estimate = 0,
+      conf.low = 0,
+      conf.high = 0,
+      model = factor(c("Without covariates", "With covariates"),
+        levels = c("Without covariates", "With covariates")
+      ),
+      event_time_plot = c(-1.05, -0.95)
+    )
+  )
+
+(es_plot_cs2021 <- ggplot(es_cs_plot_data, aes(x = event_time_plot, y = estimate, color = model)) +
+  geom_vline(xintercept = -0.5, color = "grey60") +
+  geom_hline(yintercept = 0, color = "grey20") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.07) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c(
+    "Without covariates" = "#5e81ac",
+    "With covariates" = "#bf616a"
+  )) +
+  scale_x_continuous(
+    breaks = sort(unique(es_cs_plot_data$event_time)),
+    minor_breaks = seq(-7, 14, 1),
+    expand = c(0.01, 0.01)
+  ) +
+  labs(
+    x = "Periods since flood exposure",
+    y = "Transaction rate (percentage points)",
+    color = NULL
+  ) +
+  theme_light() +
+  theme(
+    axis.title.y.left = element_text(hjust = 0.5, angle = 90),
+    legend.position = "inside",
+    legend.position.inside = c(0.165, 0.25)
+  ))
+```
+
+```{r}
+figures_dir <- file.path("figures")
+if (!dir.exists(figures_dir)) {
+    dir.create(figures_dir, recursive = TRUE)
+}
+
+ggsave(
+  filename = file.path(figures_dir, "es_plot_cs2021.png"),
+  plot = es_plot_cs2021,
+  width = 15,
+  height = 10,
+  units = "cm",
+  dpi = 72
+)
+```
+
+## Exporting the event study plot for the Butts (2021) rings DID with multiple periods
+
+```{r}
+es_ring_plot_data <- broom::tidy(es_multi_ring, conf.int = TRUE) |>
+  tidyr::extract(
+    term,
+    into = c("series", "event_time"),
+    regex = "^(rel_t(?:_within_(?:50|100|200|400))?)::(-?[0-9]+)$",
+    remove = FALSE
+  ) |>
+  filter(!is.na(event_time)) |>
+  mutate(
+    event_time = as.numeric(event_time),
+    series = recode(
+      series,
+      rel_t = "Treatment effect",
+      rel_t_within_50 = "Spillover: 0–50 m",
+      rel_t_within_100 = "Spillover: 50–100 m",
+      rel_t_within_200 = "Spillover: 100–200 m",
+      rel_t_within_400 = "Spillover: 200–400 m"
+    ),
+    series = factor(series, levels = c(
+      "Treatment effect",
+      "Spillover: 0–50 m",
+      "Spillover: 50–100 m",
+      "Spillover: 100–200 m",
+      "Spillover: 200–400 m"
+    )),
+    event_time_plot = event_time + (as.integer(series) - 3) * 0.12
+  )
+
+(es_plot_multi_ring <- ggplot(es_ring_plot_data, aes(x = event_time_plot, y = estimate, color = series)) +
+  geom_vline(xintercept = -0.5, color = "grey60") +
+  geom_hline(yintercept = 0, color = "grey20") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.08) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c(
+    "Treatment effect" = "#bf616a",
+    "Spillover: 0–50 m" = "#5e81ac",
+    "Spillover: 50–100 m" = "#88a7c9",
+    "Spillover: 100–200 m" = "#b1c6dc",
+    "Spillover: 200–400 m" = "#d9e3ee"
+  )) +
+  scale_x_continuous(
+    breaks = sort(unique(es_ring_plot_data$event_time)),
+    minor_breaks = seq(-7, 14, 1),
+    expand = c(0.01, 0.01)
+  ) +
+  labs(
+    x = "Periods since flood exposure",
+    y = "Transaction rate (percentage points)",
+    color = NULL
+  ) +
+  theme_light() +
+  theme(
+    axis.title.y.left = element_text(hjust = 0.5, angle = 90),
+    legend.position = "inside",
+    legend.position.inside = c(0.165, 0.25)
+  ))
+```
+
+```{r}
+figures_dir <- file.path("figures")
+if (!dir.exists(figures_dir)) {
+    dir.create(figures_dir, recursive = TRUE)
+}
+
+# Saving the es_plot_multi_ring figure as a PNG file of size 15cm on a 72 dpi canvas
+ggsave(
+  filename = file.path(figures_dir, "es_plot_multi_ring.png"),
+  plot = es_plot_multi_ring,
+  width = 15,
+  height = 10,
+  units = "cm",
+  dpi = 72
+)
+```
+## Exporting the event study plot for the Butts (2021) rings DID with multiple periods and covariates
+
+```{r}
+es_ring_cov_plot_data <- broom::tidy(es_multi_ring_cov, conf.int = TRUE) |>
+  tidyr::extract(
+    term,
+    into = c("series", "event_time"),
+    regex = "^(rel_t(?:_within_(?:50|100|200|400))?)::(-?[0-9]+)$",
+    remove = FALSE
+  ) |>
+  filter(!is.na(event_time)) |>
+  mutate(
+    event_time = as.numeric(event_time),
+    series = recode(
+      series,
+      rel_t = "Treatment effect",
+      rel_t_within_50 = "Spillover: 0–50 m",
+      rel_t_within_100 = "Spillover: 50–100 m",
+      rel_t_within_200 = "Spillover: 100–200 m",
+      rel_t_within_400 = "Spillover: 200–400 m"
+    ),
+    series = factor(series, levels = c(
+      "Treatment effect",
+      "Spillover: 0–50 m",
+      "Spillover: 50–100 m",
+      "Spillover: 100–200 m",
+      "Spillover: 200–400 m"
+    )),
+    event_time_plot = event_time + (as.integer(series) - 3) * 0.12
+  )
+
+(es_plot_multi_ring_cov <- ggplot(es_ring_cov_plot_data, aes(x = event_time_plot, y = estimate, color = series)) +
+  geom_vline(xintercept = -0.5, color = "grey60") +
+  geom_hline(yintercept = 0, color = "grey20") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.08) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c(
+    "Treatment effect" = "#bf616a",
+    "Spillover: 0–50 m" = "#5e81ac",
+    "Spillover: 50–100 m" = "#88a7c9",
+    "Spillover: 100–200 m" = "#b1c6dc",
+    "Spillover: 200–400 m" = "#d9e3ee"
+  )) +
+  scale_x_continuous(
+    breaks = sort(unique(es_ring_cov_plot_data$event_time)),
+    minor_breaks = seq(-7, 14, 1),
+    expand = c(0.01, 0.01)
+  ) +
+  labs(
+    x = "Periods since flood exposure",
+    y = "Transaction rate (percentage points)",
+    color = NULL
+  ) +
+  theme_light() +
+  theme(
+    axis.title.y.left = element_text(hjust = 0.5, angle = 90),
+    legend.position = "inside",
+    legend.position.inside = c(0.165, 0.25)
+  ))
+```
+
+```{r}
+figures_dir <- file.path("figures")
+if (!dir.exists(figures_dir)) {
+    dir.create(figures_dir, recursive = TRUE)
+}
+
+# Saving the es_plot_multi_ring_cov figure as a PNG file of size 15cm on a 72 dpi canvas
+ggsave(
+  filename = file.path(figures_dir, "es_plot_multi_ring_cov.png"),
+  plot = es_plot_multi_ring_cov,
+  width = 15,
+  height = 10,
+  units = "cm",
+  dpi = 72
+)
+```

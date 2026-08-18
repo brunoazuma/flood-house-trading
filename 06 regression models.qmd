@@ -699,8 +699,9 @@ sensivity.res.es <-
              e=0,
              type="relative_magnitude")
 
-HonestDiD::createSensitivityPlot_relativeMagnitudes(sensivity.res.es$robust_ci,
+sensivity.res.es.gg <- HonestDiD::createSensitivityPlot_relativeMagnitudes(sensivity.res.es$robust_ci,
                                                     sensivity.res.es$orig_ci)
+sensivity.res.es.gg
 ```
 
 ```{r}
@@ -709,8 +710,9 @@ sensivity.res.es.cov <-
              e=0,
              type="relative_magnitude")
 
-HonestDiD::createSensitivityPlot_relativeMagnitudes(sensivity.res.es.cov$robust_ci,
+sensivity.res.es.cov.gg <- HonestDiD::createSensitivityPlot_relativeMagnitudes(sensivity.res.es.cov$robust_ci,
                                                     sensivity.res.es.cov$orig_ci)
+sensivity.res.es.cov.gg
 ```
 
 ## Butts (2021) rings DID
@@ -762,19 +764,23 @@ get_ring_sensitivity <- function(es, coef_name) {
 ```{r}
 sensivity.res.es.ring <- get_ring_sensitivity(es_multi_ring, coef_name = "rel_t")
 
-HonestDiD::createSensitivityPlot_relativeMagnitudes(
+sensivity.res.es.ring.gg <- HonestDiD::createSensitivityPlot_relativeMagnitudes(
   sensivity.res.es.ring$robust_ci,
   sensivity.res.es.ring$orig_ci
 )
+
+sensivity.res.es.ring.gg
 ```
 
 ```{r}
 sensivity.res.es.ring.cov <- get_ring_sensitivity(es_multi_ring_cov, coef_name = "rel_t")
 
-HonestDiD::createSensitivityPlot_relativeMagnitudes(
+sensivity.res.es.ring.cov.gg <- HonestDiD::createSensitivityPlot_relativeMagnitudes(
   sensivity.res.es.ring.cov$robust_ci,
   sensivity.res.es.ring.cov$orig_ci
 )
+
+sensivity.res.es.ring.cov.gg
 ```
 
 ```{r}
@@ -911,7 +917,7 @@ ggsave(
   width = 15,
   height = 10,
   units = "cm",
-  dpi = 72
+  dpi = 300
 )
 ```
 
@@ -977,11 +983,6 @@ es_ring_plot_data <- broom::tidy(es_multi_ring, conf.int = TRUE) |>
 ```
 
 ```{r}
-figures_dir <- file.path("figures")
-if (!dir.exists(figures_dir)) {
-    dir.create(figures_dir, recursive = TRUE)
-}
-
 # Saving the es_plot_multi_ring figure as a PNG file of size 15cm on a 72 dpi canvas
 ggsave(
   filename = file.path(figures_dir, "es_plot_multi_ring.png"),
@@ -989,7 +990,7 @@ ggsave(
   width = 15,
   height = 10,
   units = "cm",
-  dpi = 72
+  dpi = 300
 )
 ```
 ## Exporting the event study plot for the Butts (2021) rings DID with multiple periods and covariates
@@ -1054,11 +1055,6 @@ es_ring_cov_plot_data <- broom::tidy(es_multi_ring_cov, conf.int = TRUE) |>
 ```
 
 ```{r}
-figures_dir <- file.path("figures")
-if (!dir.exists(figures_dir)) {
-    dir.create(figures_dir, recursive = TRUE)
-}
-
 # Saving the es_plot_multi_ring_cov figure as a PNG file of size 15cm on a 72 dpi canvas
 ggsave(
   filename = file.path(figures_dir, "es_plot_multi_ring_cov.png"),
@@ -1066,6 +1062,54 @@ ggsave(
   width = 15,
   height = 10,
   units = "cm",
-  dpi = 72
+  dpi = 300
+)
+```
+
+```{r}
+# Saving the sensitivity analysis plots as PNG files of size 15cm on a 72 dpi canvas
+ggsave(
+  filename = file.path(figures_dir, "sensivity_res_es.png"),
+  plot = sensivity.res.es.gg,
+  width = 15,
+  height = 10,
+  units = "cm",
+  dpi = 300
+)
+```
+
+```{r}
+# Saving the sensitivity analysis plots as PNG files of size 15cm on a 72 dpi canvas
+ggsave(
+  filename = file.path(figures_dir, "sensivity_res_es_cov.png"),
+  plot = sensivity.res.es.cov.gg,
+  width = 15,
+  height = 10,
+  units = "cm",
+  dpi = 300
+)
+```
+
+```{r}
+# Saving the sensitivity analysis plots as PNG files of size 15cm on a 72 dpi canvas
+ggsave(
+  filename = file.path(figures_dir, "sensivity_res_es_ring.png"),
+  plot = sensivity.res.es.ring.gg,
+  width = 15,
+  height = 10,
+  units = "cm",
+  dpi = 300
+)
+```
+
+```{r}
+# Saving the sensitivity analysis plots as PNG files of size 15cm on a 72 dpi canvas
+ggsave(
+  filename = file.path(figures_dir, "sensivity_res_es_ring_cov.png"),
+  plot = sensivity.res.es.ring.cov.gg,
+  width = 15,
+  height = 10,
+  units = "cm",
+  dpi = 300
 )
 ```

@@ -1,0 +1,755 @@
+---
+title: "Flood data Data"
+
+bibliography: 
+  - references.bib
+
+format:
+  html:
+    embed-resources: true
+---
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(geoarrow)
+library(arrow)
+library(sf)
+library(units)
+library(tmap)
+library(did)
+library(fixest)
+library(did2s)
+library(modelsummary)
+library(ggfixest)
+library(HonestDiD)
+```
+
+# Loading the database
+
+We start with the database generated on `06 regression models.qmd`, which is the database used on the regression models. Now, I do some sensivity analysis on the results of the regression models, to check the robustness of the results.
+
+```{r}
+spillover_dir <- file.path("data", "spillover_did")
+df_spill <- readRDS(file.path(spillover_dir, "tracts_quarter_db.rds"))
+```
+
+I will also use the database generated on `05 05 census tracts panel.qmd` to get the `distance_to_nearest_flood_event` variable.
+
+```{r}
+data <- sfarrow::st_read_parquet("data/final_database/census_transactions_flooding.parquet")
+```
+
+```{r}
+df_spill <- df_spill |>
+    left_join(
+        data |>
+            sf::st_drop_geometry() |>
+            select(census_tract, distance_to_nearest_flood_event) |>
+            mutate(
+                distance_to_nearest_flood_event = units::set_units(distance_to_nearest_flood_event, "m") |> units::drop_units()
+            ) |>
+            distinct(),
+        by = "census_tract"
+    )
+```
+
+```{r}
+rm(data)
+```
+
+## Restricting the control group based on a first stage logit
+
+Another way to check the robustness of the results is to restrict the control group based on a first stage logit. Although the treatment is exogenous, there isn't certainty about the common support assumption, so I will restrict the control group to the census tracts that are more similar to the treated census tracts. Now, I wll run a first stage logit to estimate the probability of being treated based on the covariates, and then evaluate the common support assumption based on the estimated probabilities.
+
+
+First I need to remove the census tracts that have missing values for any of the covariates and also check for support on each covariate,
+
+```{r}
+# Getting each census tract's covariates from data
+missin_cov <- df_spill |>
+    sf::st_drop_geometry() |>
+    group_by(census_tract) |>
+    summarise(
+        pct_black_brown = first(pct_black_brown),
+        pct_indigenous = first(pct_indigenous),
+        mean_household_income = first(mean_household_income),
+        distance_to_cbd = first(ditance_to_cbd),
+        distance_to_nearest_water_body = first(distance_to_nearest_water_body),
+        distance_to_nearest_park = first(distance_to_nearest_park)
+    ) |>
+    filter(
+        is.na(pct_black_brown) |
+            is.na(pct_indigenous) |
+            is.na(mean_household_income) |
+            is.na(distance_to_cbd) |
+            is.na(distance_to_nearest_water_body) |
+            is.na(distance_to_nearest_park)
+    ) |>
+    pull(census_tract)
+
+glimpse(missin_cov)
+```
+
+As I will be using the fitted values from the logit to restrict the control group, I will never use the tracts with missing values for any of the covariates, so I will remove them from the database.
+
+```{r}
+df_spill <- df_spill |>
+    filter(!census_tract %in% missin_cov)
+```
+
+```{r}
+# define a logit based on all the covariates plus the distance to the nearest flood event
+logit_model <- glm(
+    treat ~ pct_black_brown + pct_indigenous + mean_household_income + ditance_to_cbd + distance_to_nearest_water_body + distance_to_nearest_park + distance_to_nearest_flood_event,
+    data = df_spill,
+    family = binomial(link = "logit")
+)
+```
+
+```{r}
+# get the predicted probabilities of being treated
+df_spill <- df_spill |>
+    mutate(
+        phat = predict(logit_model, type = "response")
+    )
+```
+
+```{r}
+# plot the distribution of the predicted probabilities by treatment status
+ggplot(df_spill, aes(x = phat, fill = factor(treat))) +
+    geom_density(alpha = 0.5) +
+    scale_fill_manual(values = c("0" = "#5e81ac", "1" = "#bf616a"), labels = c("Control", "Treated")) +
+    labs(x = "Predicted probability of being treated", y = "Density", fill = "Treatment status") +
+    theme_light()
+```
+
+```{r}
+# plot the distribution of the predicted probabilities by treatment status
+ggplot(df_spill |> filter(phat > 0.01 | treat == 1), aes(x = phat, fill = factor(treat))) +
+    geom_density(alpha = 0.5) +
+    scale_fill_manual(values = c("0" = "#5e81ac", "1" = "#bf616a"), labels = c("Control", "Treated")) +
+    labs(x = "Predicted probability of being treated", y = "Density", fill = "Treatment status") +
+    theme_light()
+```
+
+The majority of the census tracts (more than 80%) have a predicted probability of being treated lower than 0.1, and the treated census tracts have a predicted probability of being treated higher than 0.01. However, restricting the control group to the census tracts with a predicted probability of being treated higher than 0.01 seems, visually, to be a good way to restrict the control group to the census tracts that are more similar to the treated census tracts. So, I will restrict the control group to the census tracts with a predicted probability of being treated higher than 0.01.
+
+```{r}
+df_spill_logit <- df_spill |>
+    filter(phat > 0.01 | treat == 1)
+```
+
+# CS2021
+
+## Running the CS2021 DID with multiple periods
+
+```{r}
+att.gt <- did::att_gt(
+    yname = "transaction_pct",
+    tname = "t",
+    idname = "census_tract",
+    gname = "G",
+    xformla = ~ 1,
+    weightsname = "total_residences",
+    clustervars = "census_tract",
+    base_period = "universal",
+    control_group = "notyettreated",
+    data = df_spill_logit
+)
+
+summary(att.gt)
+```
+
+```{r}
+agg.es <- did::aggte(att.gt, type = "dynamic")
+
+summary(agg.es)
+```
+
+```{r}
+ggdid(agg.es)
+```
+
+With the results above, no significant effect of flooding events on the number of transactions in the census tracts was found. So, the results don't support the hypothesis that flooding events have a significant impact on real estate liquidity in the census tracts. However, it is worth noticing that the number of transactions is a very rough measure of real estate liquidity, and further research could be done to investigate the impact of flooding events on real estate prices and time on the market, which are more direct measures of real estate liquidity.
+
+## Running the CS2021 DID with multiple periods and covariates
+
+```{r}
+df_tab <- df_spill_logit |>
+    filter(!census_tract %in% missin_cov) |>
+    sf::st_drop_geometry() |>
+    group_by(census_tract) |>
+    summarise(
+        total_residences = first(total_residences),
+        transactions = sum(transactions),
+        transaction_pct = transactions / total_residences,
+        pct_black_brown = first(pct_black_brown),
+        pct_indigenous = first(pct_indigenous),
+        mean_household_income = first(mean_household_income),
+        distance_to_cbd = first(ditance_to_cbd) |> units::set_units("m") |> units::drop_units(),
+        distance_to_nearest_water_body = first(distance_to_nearest_water_body) |> units::set_units("m") |> units::drop_units(),
+        distance_to_nearest_park = first(distance_to_nearest_park) |> units::set_units("m") |> units::drop_units(),
+        G = first(G),
+        D = G > 0
+    ) |>
+    select(-G)
+
+modelsummary::datasummary_balance(
+    ~D,
+    data=df_tab,
+    dinm_statistic = "p.value"
+)
+```
+
+```{r}
+att.gt.cov <- did::att_gt(
+    yname = "transaction_pct",
+    tname = "t",
+    idname = "census_tract",
+    gname = "G",
+    xformla = ~ pct_black_brown + pct_indigenous + mean_household_income + ditance_to_cbd + distance_to_nearest_water_body + distance_to_nearest_park,
+    weightsname = "total_residences",
+    clustervars = "census_tract",
+    base_period = "universal",
+    control_group = "notyettreated",
+    data = df_spill_logit |> filter(!census_tract %in% missin_cov)
+)
+
+summary(att.gt.cov)
+```
+
+```{r}
+agg.es.cov <- did::aggte(att.gt.cov, type = "dynamic", na.rm = TRUE)
+
+summary(agg.es.cov)
+```
+
+```{r}
+ggdid(agg.es)
+```
+
+# Running the Butts (2021) rings DID with multiple periods with the same rings from before
+
+## Running the rings DID with multiple periods without covariates
+
+```{r}
+es_multi_ring <- did2s(
+    data = df_spill_logit |>
+           sf::st_drop_geometry() |>
+           filter(!census_tract %in% missin_cov) |>
+           mutate(
+                ditance_to_cbd = units::drop_units(ditance_to_cbd),
+                distance_to_nearest_water_body = units::drop_units(distance_to_nearest_water_body),
+                distance_to_nearest_park = units::drop_units(distance_to_nearest_park)
+           ),
+    yname = "transaction_pct",
+    first_stage = ~ 1 | census_tract + t,
+    second_stage = ~ i(rel_t, ref=-1) + i(rel_t_within_50, ref=-1) + i(rel_t_within_100, ref=-1) + i(rel_t_within_200, ref=-1) + i(rel_t_within_400, ref=-1),
+    treatment = "treat_or_spill",
+    weights = "total_residences",
+    cluster_var = "census_tract"
+)
+```
+
+```{r}
+ggiplot(es_multi_ring)
+```
+
+
+```{r}
+summary(es_multi_ring)
+```
+
+## Running the rings DID with multiple periods with covariates
+
+```{r}
+es_multi_ring_cov <- did2s(
+    data = df_spill_logit |>
+           sf::st_drop_geometry() |>
+           filter(!census_tract %in% missin_cov) |>
+           mutate(
+                ditance_to_cbd = units::drop_units(ditance_to_cbd),
+                distance_to_nearest_water_body = units::drop_units(distance_to_nearest_water_body),
+                distance_to_nearest_park = units::drop_units(distance_to_nearest_park)
+           ),
+    yname = "transaction_pct",
+    first_stage = ~ i(t, pct_black_brown) + i(t, pct_indigenous) + i(t, mean_household_income) +  i(t, ditance_to_cbd) + i(t, distance_to_nearest_water_body) + i(t, distance_to_nearest_park) |  census_tract + t,
+    second_stage = ~ i(rel_t, ref=-1) + i(rel_t_within_50, ref=-1) + i(rel_t_within_100, ref=-1) + i(rel_t_within_200, ref=-1) + i(rel_t_within_400, ref=-1),
+    treatment = "treat_or_spill",
+    weights = "total_residences",
+    cluster_var = "census_tract"
+)
+```
+
+```{r}
+ggiplot(es_multi_ring_cov)
+```
+
+# Running Butts (2021) rings DID with multiple periods with covariates and alternative rings
+
+```{r}
+df_spill_logit <- df_spill_logit |>
+  mutate(
+    within_50 = !is.na(nearest_treated_dist_m) & nearest_treated_dist_m > 0 & nearest_treated_dist_m <= 50,
+    within_50 = as.numeric(within_50),
+    within_100 = !is.na(nearest_treated_dist_m) & nearest_treated_dist_m > 50 & nearest_treated_dist_m <= 100,
+    within_100 = as.numeric(within_100),
+    within_200 = !is.na(nearest_treated_dist_m) & nearest_treated_dist_m > 100 & nearest_treated_dist_m <= 200,
+    within_200 = as.numeric(within_200),
+    spill = !is.na(nearest_treated_dist_m) & nearest_treated_dist_m > 0 & nearest_treated_dist_m <= 200,
+    spill = as.numeric(spill)
+  )
+```
+
+```{r}
+
+df_spill_logit <- df_spill_logit |>
+    mutate(rel_t = ifelse(G == 0, -Inf, t - G)) |>
+    group_by(census_tract) |>
+    mutate(
+        t_within_50 = ifelse(any(within_50 == 1), min(t[within_50 == 1]), 0),
+        rel_t_within_50 = ifelse(t_within_50 > 0 & treat != 1, t - t_within_50, -Inf),
+        t_within_100 = ifelse(any(within_100 == 1), min(t[within_100 == 1]), 0),
+        rel_t_within_100 = ifelse(t_within_100 > 0 & treat != 1, t - t_within_100, -Inf),
+        t_within_200 = ifelse(any(within_200 == 1), min(t[within_200 == 1]), 0),
+        rel_t_within_200 = ifelse(t_within_200 > 0 & treat != 1, t - t_within_200, -Inf),
+        t_spill = ifelse(any(spill == 1), min(t[spill == 1]), 0),
+        rel_t_spill = ifelse(t_spill > 0 & treat != 1, t - t_spill, -Inf),
+        treat_or_spill = treat + within_50 + within_100 + within_200
+    ) |>
+    ungroup()
+```
+
+
+```{r}
+es_multi_ring_alt <- did2s(
+    data = df_spill_logit |>
+           sf::st_drop_geometry() |>
+           filter(!census_tract %in% missin_cov) |>
+           mutate(
+                ditance_to_cbd = units::drop_units(ditance_to_cbd),
+                distance_to_nearest_water_body = units::drop_units(distance_to_nearest_water_body),
+                distance_to_nearest_park = units::drop_units(distance_to_nearest_park)
+           ),
+    yname = "transaction_pct",
+    first_stage = ~ 1 | census_tract + t,
+    second_stage = ~ i(rel_t, ref=-1) + i(rel_t_within_50, ref=-1) + i(rel_t_within_100, ref=-1) + i(rel_t_within_200, ref=-1),
+    treatment = "treat_or_spill",
+    weights = "total_residences",
+    cluster_var = "census_tract"
+)
+```
+
+```{r}
+ggiplot(es_multi_ring_alt)
+```
+
+
+```{r}
+summary(es_multi_ring_alt)
+```
+
+## Running the rings DID with multiple periods with covariates
+
+```{r}
+es_multi_ring_cov_alt <- did2s(
+    data = df_spill_logit |>
+           sf::st_drop_geometry() |>
+           filter(!census_tract %in% missin_cov) |>
+           mutate(
+                ditance_to_cbd = units::drop_units(ditance_to_cbd),
+                distance_to_nearest_water_body = units::drop_units(distance_to_nearest_water_body),
+                distance_to_nearest_park = units::drop_units(distance_to_nearest_park)
+           ),
+    yname = "transaction_pct",
+    first_stage = ~ i(t, pct_black_brown) + i(t, pct_indigenous) + i(t, mean_household_income) +  i(t, ditance_to_cbd) + i(t, distance_to_nearest_water_body) + i(t, distance_to_nearest_park) |  census_tract + t,
+    second_stage = ~ i(rel_t, ref=-1) + i(rel_t_within_50, ref=-1) + i(rel_t_within_100, ref=-1) + i(rel_t_within_200, ref=-1),
+    treatment = "treat_or_spill",
+    weights = "total_residences",
+    cluster_var = "census_tract"
+)
+```
+
+```{r}
+ggiplot(es_multi_ring_cov_alt)
+```
+
+# Pre-trends tests
+
+As the tests were already done in the previous notebook and the results were still not significant, I will not run the pre-trends tests again. The results of the pre-trends tests can be found in the notebook `06 regression models.qmd`.
+
+# Exporting the figures
+
+## Exporting the CS2021 DID with multiple periods
+
+```{r}
+es_cs_plot_data <- bind_rows(
+  tibble(
+    event_time = agg.es$egt,
+    estimate = agg.es$att.egt,
+    std_error = agg.es$se.egt,
+    critical_value = agg.es$crit.val.egt,
+    model = "Without covariates"
+  ),
+  tibble(
+    event_time = agg.es.cov$egt,
+    estimate = agg.es.cov$att.egt,
+    std_error = agg.es.cov$se.egt,
+    critical_value = agg.es.cov$crit.val.egt,
+    model = "With covariates"
+  )
+) |>
+  mutate(
+    conf.low = estimate - critical_value * std_error,
+    conf.high = estimate + critical_value * std_error,
+    model = factor(model, levels = c("Without covariates", "With covariates")),
+    event_time_plot = event_time + (as.integer(model) - 1.5) * 0.10
+  ) |>
+  bind_rows(
+    tibble(
+      event_time = -1,
+      estimate = 0,
+      conf.low = 0,
+      conf.high = 0,
+      model = factor(c("Without covariates", "With covariates"),
+        levels = c("Without covariates", "With covariates")
+      ),
+      event_time_plot = c(-1.05, -0.95)
+    )
+  )
+
+(es_plot_cs2021 <- ggplot(es_cs_plot_data, aes(x = event_time_plot, y = estimate, color = model)) +
+  geom_vline(xintercept = -0.5, color = "grey60") +
+  geom_hline(yintercept = 0, color = "grey20") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.07) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c(
+    "Without covariates" = "#5e81ac",
+    "With covariates" = "#bf616a"
+  )) +
+  scale_x_continuous(
+    breaks = sort(unique(es_cs_plot_data$event_time)),
+    minor_breaks = seq(-7, 14, 1),
+    expand = c(0.01, 0.01)
+  ) +
+  labs(
+    x = "Periods since flood exposure",
+    y = "Transaction rate (percentage points)",
+    color = NULL
+  ) +
+  theme_light() +
+  theme(
+    axis.title.y.left = element_text(hjust = 0.5, angle = 90),
+    legend.position = "inside",
+    legend.position.inside = c(0.165, 0.25)
+  ))
+```
+
+```{r}
+figures_dir <- file.path("figures", "08 sensivity analysis - logit 1st stage")
+if (!dir.exists(figures_dir)) {
+    dir.create(figures_dir, recursive = TRUE)
+}
+
+ggsave(
+  filename = file.path(figures_dir, "es_plot_cs2021.png"),
+  plot = es_plot_cs2021,
+  width = 15,
+  height = 10,
+  units = "cm",
+  dpi = 300
+)
+```
+
+## Exporting the event study plot for the Butts (2021) rings DID with multiple periods
+
+```{r}
+es_ring_plot_data <- broom::tidy(es_multi_ring, conf.int = TRUE) |>
+  tidyr::extract(
+    term,
+    into = c("series", "event_time"),
+    regex = "^(rel_t(?:_within_(?:50|100|200|400))?)::(-?[0-9]+)$",
+    remove = FALSE
+  ) |>
+  filter(!is.na(event_time)) |>
+  mutate(
+    event_time = as.numeric(event_time),
+    series = recode(
+      series,
+      rel_t = "Treatment effect",
+      rel_t_within_50 = "Spillover: 0–50 m",
+      rel_t_within_100 = "Spillover: 50–100 m",
+      rel_t_within_200 = "Spillover: 100–200 m",
+      rel_t_within_400 = "Spillover: 200–400 m"
+    ),
+    series = factor(series, levels = c(
+      "Treatment effect",
+      "Spillover: 0–50 m",
+      "Spillover: 50–100 m",
+      "Spillover: 100–200 m",
+      "Spillover: 200–400 m"
+    )),
+    event_time_plot = event_time + (as.integer(series) - 3) * 0.12
+  )
+
+(es_plot_multi_ring <- ggplot(es_ring_plot_data, aes(x = event_time_plot, y = estimate, color = series)) +
+  geom_vline(xintercept = -0.5, color = "grey60") +
+  geom_hline(yintercept = 0, color = "grey20") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.08) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c(
+    "Treatment effect" = "#bf616a",
+    "Spillover: 0–50 m" = "#5e81ac",
+    "Spillover: 50–100 m" = "#88a7c9",
+    "Spillover: 100–200 m" = "#b1c6dc",
+    "Spillover: 200–400 m" = "#d9e3ee"
+  )) +
+  scale_x_continuous(
+    breaks = sort(unique(es_ring_plot_data$event_time)),
+    minor_breaks = seq(-7, 14, 1),
+    expand = c(0.01, 0.01)
+  ) +
+  labs(
+    x = "Periods since flood exposure",
+    y = "Transaction rate (percentage points)",
+    color = NULL
+  ) +
+  theme_light() +
+  theme(
+    axis.title.y.left = element_text(hjust = 0.5, angle = 90),
+    legend.position = "inside",
+    legend.position.inside = c(0.165, 0.25)
+  ))
+```
+
+```{r}
+# Saving the es_plot_multi_ring figure as a PNG file of size 15cm on a 72 dpi canvas
+ggsave(
+  filename = file.path(figures_dir, "es_plot_multi_ring.png"),
+  plot = es_plot_multi_ring,
+  width = 15,
+  height = 10,
+  units = "cm",
+  dpi = 300
+)
+```
+## Exporting the event study plot for the Butts (2021) rings DID with multiple periods and covariates
+
+```{r}
+es_ring_cov_plot_data <- broom::tidy(es_multi_ring_cov, conf.int = TRUE) |>
+  tidyr::extract(
+    term,
+    into = c("series", "event_time"),
+    regex = "^(rel_t(?:_within_(?:50|100|200|400))?)::(-?[0-9]+)$",
+    remove = FALSE
+  ) |>
+  filter(!is.na(event_time)) |>
+  mutate(
+    event_time = as.numeric(event_time),
+    series = recode(
+      series,
+      rel_t = "Treatment effect",
+      rel_t_within_50 = "Spillover: 0–50 m",
+      rel_t_within_100 = "Spillover: 50–100 m",
+      rel_t_within_200 = "Spillover: 100–200 m",
+      rel_t_within_400 = "Spillover: 200–400 m"
+    ),
+    series = factor(series, levels = c(
+      "Treatment effect",
+      "Spillover: 0–50 m",
+      "Spillover: 50–100 m",
+      "Spillover: 100–200 m",
+      "Spillover: 200–400 m"
+    )),
+    event_time_plot = event_time + (as.integer(series) - 3) * 0.12
+  )
+
+(es_plot_multi_ring_cov <- ggplot(es_ring_cov_plot_data, aes(x = event_time_plot, y = estimate, color = series)) +
+  geom_vline(xintercept = -0.5, color = "grey60") +
+  geom_hline(yintercept = 0, color = "grey20") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.08) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c(
+    "Treatment effect" = "#bf616a",
+    "Spillover: 0–50 m" = "#5e81ac",
+    "Spillover: 50–100 m" = "#88a7c9",
+    "Spillover: 100–200 m" = "#b1c6dc",
+    "Spillover: 200–400 m" = "#d9e3ee"
+  )) +
+  scale_x_continuous(
+    breaks = sort(unique(es_ring_cov_plot_data$event_time)),
+    minor_breaks = seq(-7, 14, 1),
+    expand = c(0.01, 0.01)
+  ) +
+  labs(
+    x = "Periods since flood exposure",
+    y = "Transaction rate (percentage points)",
+    color = NULL
+  ) +
+  theme_light() +
+  theme(
+    axis.title.y.left = element_text(hjust = 0.5, angle = 90),
+    legend.position = "inside",
+    legend.position.inside = c(0.165, 0.25)
+  ))
+```
+
+```{r}
+# Saving the es_plot_multi_ring_cov figure as a PNG file of size 15cm on a 72 dpi canvas
+ggsave(
+  filename = file.path(figures_dir, "es_plot_multi_ring_cov.png"),
+  plot = es_plot_multi_ring_cov,
+  width = 15,
+  height = 10,
+  units = "cm",
+  dpi = 300
+)
+```
+
+## Exporting the event study plot for the Butts (2021) alternative rings DID with multiple periods
+
+```{r}
+es_ring_plot_alt_data <- broom::tidy(es_multi_ring_alt, conf.int = TRUE) |>
+  tidyr::extract(
+    term,
+    into = c("series", "event_time"),
+    regex = "^(rel_t(?:_within_(?:50|100|200|400))?)::(-?[0-9]+)$",
+    remove = FALSE
+  ) |>
+  filter(!is.na(event_time)) |>
+  mutate(
+    event_time = as.numeric(event_time),
+    series = recode(
+      series,
+      rel_t = "Treatment effect",
+      rel_t_within_50 = "Spillover: 0–50 m",
+      rel_t_within_100 = "Spillover: 50–100 m",
+      rel_t_within_200 = "Spillover: 100–200 m",
+      rel_t_within_400 = "Spillover: 200–400 m"
+    ),
+    series = factor(series, levels = c(
+      "Treatment effect",
+      "Spillover: 0–50 m",
+      "Spillover: 50–100 m",
+      "Spillover: 100–200 m",
+      "Spillover: 200–400 m"
+    )),
+    event_time_plot = event_time + (as.integer(series) - 3) * 0.12
+  )
+
+(es_plot_multi_ring_alt <- ggplot(es_ring_plot_alt_data, aes(x = event_time_plot, y = estimate, color = series)) +
+  geom_vline(xintercept = -0.5, color = "grey60") +
+  geom_hline(yintercept = 0, color = "grey20") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.08) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c(
+    "Treatment effect" = "#bf616a",
+    "Spillover: 0–50 m" = "#5e81ac",
+    "Spillover: 50–100 m" = "#88a7c9",
+    "Spillover: 100–200 m" = "#b1c6dc",
+    "Spillover: 200–400 m" = "#d9e3ee"
+  )) +
+  scale_x_continuous(
+    breaks = sort(unique(es_ring_plot_data$event_time)),
+    minor_breaks = seq(-7, 14, 1),
+    expand = c(0.01, 0.01)
+  ) +
+  labs(
+    x = "Periods since flood exposure",
+    y = "Transaction rate (percentage points)",
+    color = NULL
+  ) +
+  theme_light() +
+  theme(
+    axis.title.y.left = element_text(hjust = 0.5, angle = 90),
+    legend.position = "inside",
+    legend.position.inside = c(0.165, 0.25)
+  ))
+```
+
+```{r}
+# Saving the es_plot_multi_ring_alt figure as a PNG file of size 15cm on a 72 dpi canvas
+ggsave(
+  filename = file.path(figures_dir, "es_plot_multi_ring_alt.png"),
+  plot = es_plot_multi_ring_alt,
+  width = 15,
+  height = 10,
+  units = "cm",
+  dpi = 300
+)
+```
+
+## Exporting the event study plot for the Butts (2021) alternative rings DID with multiple periods and covariates
+
+```{r}
+es_ring_cov_plot_alt_data <- broom::tidy(es_multi_ring_cov, conf.int = TRUE) |>
+  tidyr::extract(
+    term,
+    into = c("series", "event_time"),
+    regex = "^(rel_t(?:_within_(?:50|100|200|400))?)::(-?[0-9]+)$",
+    remove = FALSE
+  ) |>
+  filter(!is.na(event_time)) |>
+  mutate(
+    event_time = as.numeric(event_time),
+    series = recode(
+      series,
+      rel_t = "Treatment effect",
+      rel_t_within_50 = "Spillover: 0–50 m",
+      rel_t_within_100 = "Spillover: 50–100 m",
+      rel_t_within_200 = "Spillover: 100–200 m",
+      rel_t_within_400 = "Spillover: 200–400 m"
+    ),
+    series = factor(series, levels = c(
+      "Treatment effect",
+      "Spillover: 0–50 m",
+      "Spillover: 50–100 m",
+      "Spillover: 100–200 m",
+      "Spillover: 200–400 m"
+    )),
+    event_time_plot = event_time + (as.integer(series) - 3) * 0.12
+  )
+
+(es_plot_multi_ring_cov_alt <- ggplot(es_ring_cov_plot_alt_data, aes(x = event_time_plot, y = estimate, color = series)) +
+  geom_vline(xintercept = -0.5, color = "grey60") +
+  geom_hline(yintercept = 0, color = "grey20") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.08) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c(
+    "Treatment effect" = "#bf616a",
+    "Spillover: 0–50 m" = "#5e81ac",
+    "Spillover: 50–100 m" = "#88a7c9",
+    "Spillover: 100–200 m" = "#b1c6dc",
+    "Spillover: 200–400 m" = "#d9e3ee"
+  )) +
+  scale_x_continuous(
+    breaks = sort(unique(es_ring_cov_plot_data$event_time)),
+    minor_breaks = seq(-7, 14, 1),
+    expand = c(0.01, 0.01)
+  ) +
+  labs(
+    x = "Periods since flood exposure",
+    y = "Transaction rate (percentage points)",
+    color = NULL
+  ) +
+  theme_light() +
+  theme(
+    axis.title.y.left = element_text(hjust = 0.5, angle = 90),
+    legend.position = "inside",
+    legend.position.inside = c(0.165, 0.25)
+  ))
+```
+
+```{r}
+# Saving the es_plot_multi_ring_cov_alt figure as a PNG file of size 15cm on a 72 dpi canvas
+ggsave(
+  filename = file.path(figures_dir, "es_plot_multi_ring_cov_alt.png"),
+  plot = es_plot_multi_ring_cov_alt,
+  width = 15,
+  height = 10,
+  units = "cm",
+  dpi = 300
+)
+```
+

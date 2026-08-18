@@ -3,7 +3,7 @@ title: "The impact of flood occurrences on property sales: the case of São Paul
 author:
   name: "Bruno Azuma Balzano - nº usp: 10698043"
   email: "brunoazuma@usp.br"
-date: "2026-08-18"
+date: "2026-08-17"
 
 bibliography: 
   - references.bib
